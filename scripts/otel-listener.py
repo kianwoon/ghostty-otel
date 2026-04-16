@@ -117,6 +117,21 @@ class HoldTimer:
         # Keep re-arming until a tool/input span clears _llm_pending,
         # or we hit the safety cap (prevents orphan busy state forever).
         if llm_pending and rearms < LLM_PENDING_MAX_REARMS:
+            # Guard: check if stop hook or external agent already set idle.
+            # Don't re-arm if state file already shows idle/waiting_input/done.
+            state_file = f"{STATE_DIR}/ghostty-indicator-state-{key}.txt"
+            try:
+                with open(state_file, "r") as f:
+                    current = f.read().strip().split(":")[0]
+                if current in ("idle", "waiting_input", "done"):
+                    # External authority (stop hook) cleared the state —
+                    # stop re-arming and cancel the pending flag.
+                    with self._lock:
+                        self._llm_pending = False
+                        self._llm_rearms = 0
+                    return
+            except (OSError, IOError):
+                pass
             with self._lock:
                 self._llm_rearms = rearms + 1
                 self._safety_timer = threading.Timer(
