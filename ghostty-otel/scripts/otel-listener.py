@@ -61,8 +61,6 @@ def write_state(state: str, meta: dict = None):
     if meta:
         entry["meta"] = meta
 
-    ts = datetime.now().isoformat()
-
     # 1. Write LLM-active file (this is what the heartbeat polls)
     #    Only update for LLM-calling states; clear on idle/waiting.
     if state == "calling_llm":
@@ -74,13 +72,13 @@ def write_state(state: str, meta: dict = None):
         except FileNotFoundError:
             pass
 
-    # 2. Also write to ghostty state file for OSC 9;4 emission
-    #    Only set state if hooks haven't already set a more specific one.
-    if state == "calling_llm":
-        tmp = STATE_FILE + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(entry, f)
-        os.rename(tmp, STATE_FILE)
+    # 2. Write to ghostty state file — OTEL is the authoritative source.
+    #    Every span writes state with metadata (tool name, model, success/failure).
+    #    Hooks may also write, but OTEL overwrites with richer data.
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(entry, f)
+    os.rename(tmp, STATE_FILE)
 
     # 3. Log if configured
     if LOG_FILE:
