@@ -1,0 +1,17 @@
+{
+  "description": "Start/stop OTEL listener daemon and set telemetry env vars",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/start-listener.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
