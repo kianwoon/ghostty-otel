@@ -1,4 +1,5 @@
 # ghostty-otel
+<img width="1536" height="1024" alt="ChatGPT Image Apr 17, 2026, 03_46_44 AM" src="https://github.com/user-attachments/assets/4d76b8a7-6f07-4b03-b1e2-aec4d0ad6a18" />
 
 Real-time visibility into Claude Code's internal state for the [Ghostty](https://ghostty.org) terminal.
 
