@@ -1,47 +1,62 @@
 # ghostty-otel
 
-OpenTelemetry-based indicator control for the [Ghostty](https://ghostty.org) terminal.
+Real-time visibility into Claude Code's internal state for the [Ghostty](https://ghostty.org) terminal.
 
-Receives Claude Code's OTEL spans in real time and **directly controls the Ghostty indicator** via OSC 9;4 sequences — providing sub-5ms indicator response with rich metadata about what Claude is doing.
+Receives Claude Code's OpenTelemetry spans and drives **Ghostty's progress indicator** (OSC 9;4) and **window title** (OSC 2) in real time — so you always know what the AI agent is doing, even when you're not looking at the terminal.
 
-## What It Detects
+## Why This Exists
 
-| OTEL Span | State | OSC Code | Indicator |
-|-----------|-------|----------|-----------|
-| `claude_code.llm_request` | `calling_llm` | `3` (busy) | ON |
-| `claude_code.tool` | `tool_running` | `3` (busy) | ON |
-| `claude_code.tool.execution` | `tool_exec` | `3` (busy) | ON |
-| `claude_code.tool.blocked_on_user` | `waiting_input` | `0` (clear) | OFF |
-| `claude_code.interaction` | `idle` | `0` (clear) | OFF |
+Claude Code can run for minutes on complex tasks — calling LLMs, executing tools, running agents. Without visibility:
 
-## Architecture
+- You switch tabs and come back wondering: "Is Claude still working, or did it stall?"
+- An idle agent goes unnoticed while you wait for a response that's never coming
+- Tool failures happen silently while the indicator says everything is fine
+
+**ghostty-otel solves this** by showing Claude's exact state in the terminal indicator and window title — updating in real time as the agent works.
+
+## What You See
+
+| Claude is... | Indicator | Window Title |
+|-------------|-----------|--------------|
+| Calling the LLM | Busy (spinning) | `claude: calling_llm:MiniMax-M2.7[1m]` |
+| Running a tool | Busy (spinning) | `claude: tool_exec:Read` |
+| Waiting for user input | Idle | `claude: idle` |
+| Turn complete | Idle | `claude: idle` |
+
+## How It Works
 
 ```
-OTEL spans ──▶ otel-listener.py ──┬── OSC 9;4 ──▶ Ghostty indicator (PRIMARY)
-                                   ├── .json state file (rich metadata)
-                                   ├── .txt state file  (plain text compat)
-                                   ├── sentinel file    (heartbeat compat)
-                                   ├── heartbeat thread (re-emit every 3s)
-                                   └── watchdog thread  (liveness signal)
-
-Hooks ──▶ ghostty-state.sh (COMPLEMENT only):
-  PreCompact       → keepalive (OTEL doesn't see compaction)
-  PostToolUseFail  → error indicator (red)
-  SessionStart     → clear indicator + start OTEL listener
-  SessionEnd       → done (safety net)
-  Notification     → done (faster than OTEL idle span)
+Claude Code ──OTEL spans──▶ otel-listener.py ──state files──▶ otel-watcher.sh ──OSC──▶ Ghostty
+   │                              │                                │
+   │                              ├── HoldTimer (60s)              ├── OSC 9;4 (progress bar)
+   │                              ├── LLM-pending re-arm          └── OSC 2 (window title)
+   │                              └── Multi-session routing
+   │
+   └── Also: UserPromptSubmit ──▶ prompt-submit.sh ──immediate OSC──▶ Ghostty (gap coverage)
 ```
 
-`prompt-submit.sh` emits OSC 9;4;3 immediately on user input — covers the gap before the first OTEL span arrives.
+### Key Features
 
-## State Files
+**1. Anti-flapping HoldTimer**
+- Idle spans from Claude Code are deferred for 60 seconds before being written to the state file
+- Prevents the indicator from flashing OFF between LLM responses (Claude sends `idle` spans while still processing)
 
-Each session writes to `${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}`:
+**2. LLM-pending re-arm**
+- When the last busy span was `calling_llm` (no tool/input span followed), the timer re-arms instead of flushing idle
+- Covers slow upstream API calls — indicator stays ON until the LLM actually responds
+- Safety cap: 10 re-arms (10 minutes max) prevents orphan busy states
 
-| File | Format | Purpose |
-|------|--------|---------|
-| `.json` | `{"state":"calling_llm","ts":"...","meta":{"model":"..."}}` | Rich metadata for external consumers |
-| `.txt` | `working\n` or `done\n` | Plain text for ghostty-state.sh backward compat |
+**3. Multi-session support**
+- Routes spans to correct session via `session.id` attribute
+- Each session gets independent state files and watcher process
+- Session key derived from TTY device (ttys000, ttys002, etc.)
+
+**4. Window title (OSC 2)**
+- Shows exact state + metadata in terminal window title
+- Examples: `claude: calling_llm:MiniMax-M2.7[1m]:True`, `claude: tool_exec:Read`
+
+**5. Gap coverage**
+- `UserPromptSubmit` hook emits OSC immediately on user input — covers the gap before the first OTEL span arrives (~100-200ms)
 
 ## Installation
 
@@ -49,7 +64,27 @@ Each session writes to `${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}`:
 claude plugin add kianwoonwong/ghostty-otel
 ```
 
-That's it. The plugin auto-configures OTEL telemetry. **No manual settings.json edits needed.**
+That's it. The plugin auto-configures OTEL telemetry via `settings.json`. No manual edits needed.
+
+### What gets set up
+
+| Component | Provided by |
+|-----------|------------|
+| OTEL telemetry config | Plugin's `.claude/settings.json` |
+| OTEL listener (Python HTTP server) | `scripts/otel-listener.py` |
+| Per-session watcher (OSC emitter) | `scripts/otel-watcher.sh` |
+| Prompt submit hook (gap coverage) | `scripts/prompt-submit.sh` |
+| Session lifecycle hooks | `scripts/start-listener.sh`, `scripts/session-cleanup.sh` |
+| Session key derivation | `scripts/session-key.sh` |
+
+### Plugin hooks (auto-configured)
+
+| Hook | Script | Purpose |
+|------|--------|---------|
+| `SessionStart` | `start-listener.sh` | Start OTEL listener + watcher |
+| `UserPromptSubmit` | `prompt-submit.sh` | Immediate OSC emit + listener health check |
+| `Notification` | `notification-done.sh` | Reserved (currently no-op) |
+| `SessionEnd` | `session-cleanup.sh` | Clean up state files + watcher |
 
 ## Configuration
 
@@ -57,24 +92,55 @@ That's it. The plugin auto-configures OTEL telemetry. **No manual settings.json 
 |----------|---------|-------------|
 | `GHOSTTY_OTEL_PORT` | `4318` | OTLP HTTP server port |
 | `GHOSTTY_OTEL_STATE_DIR` | `/tmp` | Directory for state files |
+| `GHOSTTY_OTEL_HOLD_SECONDS` | `60` | Seconds to hold before writing idle |
+| `GHOSTTY_OTEL_LLM_MAX_REARMS` | `10` | Max timer re-arms while LLM is pending |
 | `GHOSTTY_OTEL_LOG` | (empty) | Log file path (empty = no logging) |
+| `GHOSTTY_OTEL_WATCHER_LOG` | `/tmp/ghostty-watcher-{key}.log` | Per-session watcher log |
 
-### Session Key
+## State Files
 
-Derived from TTY device — ensures multiple Claude Code sessions in different terminals get independent indicators:
-- `tty` command → basename of `/dev/pts/N` or `/dev/ttysNNN`
-- Falls back to `ps -o tty=` → basename
-- Falls back to `"tty"`
+Each session writes to `${GHOSTTY_OTEL_STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt`:
+
+```
+calling_llm:MiniMax-M2.7[1m]:True
+tool_exec:Read
+tool_running:Bash
+waiting_input
+idle
+```
+
+Format: `state[:metadata...]` — one line, plain text.
+
+## OTEL Span Mapping
+
+| Claude Code Span | State | Indicator |
+|-----------------|-------|-----------|
+| `claude_code.llm_request` | `calling_llm` | ON (busy) |
+| `claude_code.tool` | `tool_running` | ON (busy) |
+| `claude_code.tool.execution` | `tool_exec` | ON (busy) |
+| `claude_code.tool.blocked_on_user` | `waiting_input` | OFF (idle) |
+| `claude_code.interaction` | `idle` | OFF (idle, after hold) |
 
 ## Performance
 
-- **OTEL listener**: <5ms per span (file I/O + OSC emit)
-- **OSC emission**: direct TTY write (no subprocess)
-- **State writes**: atomic via tmp+rename
-- **Heartbeat**: daemon thread re-emits OSC every 3s while active
-- **Watchdog**: writes timestamp every 10s — other processes can detect dead listener
-- **prompt-submit.sh**: <50ms (file I/O + OSC emit, no subprocess)
-- **tmux passthrough**: automatic DCS wrapping when `TMUX` is set
+- **OTEL listener**: <5ms per span (file I/O)
+- **Watcher poll**: 100ms interval, 3s keep-alive
+- **Prompt submit**: <50ms (OSC emit + PID check)
+- **State writes**: atomic via tmp + rename
+- **tmux**: automatic DCS wrapping when `$TMUX` is set
+
+## Troubleshooting
+
+**Indicator not showing?**
+1. Check listener is running: `cat /tmp/ghostty-otel.pid && kill -0 $(cat /tmp/ghostty-otel.pid)`
+2. Check watcher is running: `cat /tmp/ghostty-watcher-$(tty | xargs basename).pid`
+3. Check state file: `cat /tmp/ghostty-indicator-state-$(tty | xargs basename).txt`
+
+**Indicator flashing OFF briefly?**
+- The HoldTimer should prevent this. If it still happens, the upstream API may be very slow (>10 min). Increase `GHOSTTY_OTEL_LLM_MAX_REARMS`.
+
+**Multiple sessions showing same state?**
+- Session key is derived from TTY. Run `tty` in each terminal to verify they differ.
 
 ## License
 
