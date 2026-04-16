@@ -38,6 +38,7 @@ SPAN_STATE_MAP = {
     "claude_code.interaction": "idle",
 }
 
+
 # session.id → session_key mapping (in-memory, refreshed from disk)
 _sid_map_lock = threading.Lock()
 _sid_map = {}  # session_id → session_key
@@ -294,6 +295,22 @@ class OTLPHandler(http.server.BaseHTTPRequestHandler):
                                 timer = get_hold_timer(sid)
 
                                 if state == "idle":
+                                    # Guard: don't overwrite a busy state that was
+                                    # set by prompt-submit.sh for a NEW turn.
+                                    # OTEL spans arrive AFTER completion, so a
+                                    # previous turn's idle span can race with the
+                                    # new turn's prompt-submit writing calling_llm.
+                                    state_file = f"{STATE_DIR}/ghostty-indicator-state-{sk}.txt"
+                                    try:
+                                        with open(state_file, "r") as sf:
+                                            current = sf.read().strip().split(":")[0]
+                                        if current in ("calling_llm", "tool_running",
+                                                       "tool_exec", "working"):
+                                            # New turn already started — discard
+                                            # stale idle from previous turn
+                                            continue
+                                    except (OSError, IOError):
+                                        pass
                                     # Idle: defer through HoldTimer to prevent
                                     # premature idle between LLM responses
                                     deferred = timer.update(False, sk)
@@ -305,13 +322,15 @@ class OTLPHandler(http.server.BaseHTTPRequestHandler):
                                     # waiting_input → ON immediately, reset safety net timer
                                     timer.clear_timers()
                                     write_state(state, attrs, sk)
+                                elif state == "calling_llm":
+                                    # OTEL llm_request spans arrive AFTER completion.
+                                    # Writing calling_llm shows stale state - don't do it.
+                                    # Just update HoldTimer to keep indicator busy.
+                                    # The actual calling_llm state comes from prompt-submit.sh.
+                                    timer.update(True, sk, is_llm=True)
                                 else:
-                                    # Busy (calling_llm, tool_running, tool_exec):
-                                    # ON immediately, extend safety net timer.
-                                    # is_llm=True for calling_llm so HoldTimer knows
-                                    # LLM response is pending (may re-arm on idle).
-                                    is_llm = (state == "calling_llm")
-                                    timer.update(True, sk, is_llm=is_llm)
+                                    # tool_running, tool_exec → write normally
+                                    timer.update(True, sk, is_llm=False)
                                     write_state(state, attrs, sk)
                             except Exception:
                                 pass
