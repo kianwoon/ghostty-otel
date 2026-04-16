@@ -1,50 +1,77 @@
 #!/usr/bin/env bash
-# Fires on UserPromptSubmit — restart heartbeat immediately.
-# Ensures indicator turns ON before Claude starts processing.
-# Performance budget: <50ms (file I/O only).
+# Fires on UserPromptSubmit — emit indicator ON + health check listener.
+# This hook runs in the correct TTY context, so OSC reaches the terminal.
+# Performance budget: <50ms (OSC emit + PID check).
 set -u
 
-# --- Session key derivation (same as start-listener.sh) ---
-_tty=$(tty 2>/dev/null) || true
-if [ -z "$_tty" ] || [ "$_tty" = "not a tty" ]; then
-  _tty_ps=$(ps -o tty= -p $PPID 2>/dev/null | tr -d ' ') || true
-  if [ -n "$_tty_ps" ] && [ "$_tty_ps" != "??" ]; then
-    SESSION_KEY="$(echo "$_tty_ps" | tr '/' '_' | tr -cd 'a-zA-Z0-9_-')"
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+STATE_DIR="${GHOSTTY_OTEL_STATE_DIR:-/tmp}"
+
+# --- Session key + TTY path derivation (single source of truth) ---
+_SESSION_INFO="$(bash "${PLUGIN_ROOT}/scripts/session-key.sh")"
+TTY_PATH="$(echo "$_SESSION_INFO" | sed -n '1p')"
+SESSION_KEY="$(echo "$_SESSION_INFO" | sed -n '2p')"
+
+PID_FILE="${STATE_DIR}/ghostty-otel-${SESSION_KEY}.pid"
+
+# --- OSC 9;4 emit (tmux-aware) ---
+# Uses /dev/tty directly since hook has controlling terminal
+emit() {
+  local seq="$1"
+  if [ -n "${TMUX:-}" ]; then
+    local escaped="${seq//$'\033'/$'\033\033'}"
+    printf '\033Ptmux;\033%s\033\\' "$escaped" > /dev/tty 2>/dev/null || true
   else
-    SESSION_KEY="tty"
+    printf '%b' "$seq" > /dev/tty 2>/dev/null || true
+  fi
+}
+
+# 1. Emit indicator ON immediately
+emit '\033]9;4;3\033\\'
+emit '\033]2;claude: calling_llm\033\\'
+
+# 2. Write state file (watchers/hooks can read this)
+echo "calling_llm" > "${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt" 2>/dev/null || true
+
+# 3. Check listener health — restart if dead (<2ms when alive)
+if [ -f "$PID_FILE" ]; then
+  _pid=$(cat "$PID_FILE" 2>/dev/null) || true
+  if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
+    : # listener alive
+  else
+    # Listener dead — restart in background (nohup to survive hook exit)
+    nohup bash "${PLUGIN_ROOT}/scripts/start-listener.sh" > /dev/null 2>&1 &
   fi
 else
-  SESSION_KEY="$(basename "$_tty" | tr '/' '_' | tr -cd 'a-zA-Z0-9_-')"
+  # No PID file — start listener
+  nohup bash "${PLUGIN_ROOT}/scripts/start-listener.sh" > /dev/null 2>&1 &
 fi
 
-STATE_DIR="${GHOSTTY_OTEL_STATE_DIR:-/tmp}"
-LLM_ACTIVE="${STATE_DIR}/ghostty-llm-active-${SESSION_KEY}"
-ACTIVE_UNTIL="${STATE_DIR}/ghostty-active-until-${SESSION_KEY}"
-STATE_FILE="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}"
-HEARTBEAT_PID="${STATE_DIR}/ghostty-heartbeat-${SESSION_KEY}.pid"
+# 4. Ensure watcher is running (with lock to prevent duplicates)
+WATCHER_PID_FILE="${STATE_DIR}/ghostty-watcher-${SESSION_KEY}.pid"
+WATCHER_LOCK="${STATE_DIR}/ghostty-watcher-${SESSION_KEY}.lock"
 
-# 1. Signal LLM active immediately (heartbeat polls this)
-touch "$LLM_ACTIVE"
+_start_watcher() {
+  GHOSTTY_OTEL_TTY="$TTY_PATH" \
+  GHOSTTY_OTEL_SESSION_KEY="$SESSION_KEY" \
+  nohup bash "${PLUGIN_ROOT}/scripts/otel-watcher.sh" > /dev/null 2>&1 &
+}
 
-# 2. Extend active window by 30s (covers time until first OTEL span arrives)
-_now=$(date +%s)
-echo $((_now + 30)) > "$ACTIVE_UNTIL"
-
-# 3. Touch state file to update mtime (heartbeat activity signal)
-touch "$STATE_FILE" 2>/dev/null || true
-
-# 4. Start heartbeat if not running
-if [ -f "$HEARTBEAT_PID" ]; then
-  _pid=$(cat "$HEARTBEAT_PID" 2>/dev/null) || true
-  if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
-    # Heartbeat alive — activity signals already set, nothing more to do
-    exit 0
+if mkdir "$WATCHER_LOCK" 2>/dev/null; then
+  if [ -f "$WATCHER_PID_FILE" ]; then
+    _wpid=$(cat "$WATCHER_PID_FILE" 2>/dev/null) || true
+    if [ -n "$_wpid" ] && kill -0 "$_wpid" 2>/dev/null; then
+      rmdir "$WATCHER_LOCK" 2>/dev/null || true
+    else
+      _start_watcher
+      rmdir "$WATCHER_LOCK" 2>/dev/null || true
+    fi
+  else
+    _start_watcher
+    rmdir "$WATCHER_LOCK" 2>/dev/null || true
   fi
-fi
-
-# Heartbeat not running — start it via ghostty-state.sh
-if [ -x "${HOME}/.claude/hooks/ghostty-state.sh" ]; then
-  "${HOME}/.claude/hooks/ghostty-state.sh" working
+else
+  : # Another hook is already starting the watcher
 fi
 
 exit 0

@@ -1,46 +1,35 @@
 #!/usr/bin/env python3
 """
 OTEL State Listener for Ghostty Terminal Indicator
-Receives Claude Code's OTEL spans and writes state to a shared file.
+Receives Claude Code's OTEL spans and writes per-session state files.
+Multi-session aware: routes spans to correct session via session.id attribute.
 
 State transitions:
-  claude_code.llm_request           → calling_llm (thinking/generating)
-  claude_code.tool                  → tool_running  (tool_name extracted)
+  claude_code.llm_request           → calling_llm
+  claude_code.tool                  → tool_running
+  claude_code.tool.execution        → tool_exec
   claude_code.tool.blocked_on_user  → waiting_input
-  claude_code.tool.execution        → tool_exec (with success/failure)
-  claude_code.interaction           → idle (turn complete)
-
-Performance budget: <5ms per span (just file I/O).
+  claude_code.interaction           → idle
 """
 
 import json
 import os
 import sys
 import signal
+import time
+import threading
+import glob
 import http.server
 import socketserver
-from datetime import datetime
-from pathlib import Path
 
-# --- Configuration ---
 PORT = int(os.environ.get("GHOSTTY_OTEL_PORT", "4318"))
 STATE_DIR = os.environ.get("GHOSTTY_OTEL_STATE_DIR", "/tmp")
-SESSION_KEY = os.environ.get("GHOSTTY_OTEL_SESSION_KEY", "")
 LOG_FILE = os.environ.get("GHOSTTY_OTEL_LOG", "")
+BUSY_HOLD_SECONDS = float(os.environ.get("GHOSTTY_OTEL_HOLD_SECONDS", "60"))
+# Maximum LLM-pending re-arms before forcing idle (safety net).
+# Each re-arm adds BUSY_HOLD_SECONDS. 10 × 60s = 10min max wait.
+LLM_PENDING_MAX_REARMS = int(os.environ.get("GHOSTTY_OTEL_LLM_MAX_REARMS", "10"))
 
-# State file paths
-# Primary state: ghostty-indicator-state-{SESSION_KEY} (ghostty-state.sh writes this)
-# LLM-active: ghostty-llm-active-{SESSION_KEY} (OTEL listener writes this, heartbeat reads)
-if SESSION_KEY:
-    STATE_FILE = f"{STATE_DIR}/ghostty-indicator-state-{SESSION_KEY}"
-    LLM_ACTIVE_FILE = f"{STATE_DIR}/ghostty-llm-active-{SESSION_KEY}"
-else:
-    STATE_FILE = f"{STATE_DIR}/ghostty-otel-state"
-    LLM_ACTIVE_FILE = f"{STATE_DIR}/ghostty-otel-llm-active"
-
-HEARTBEAT_FILE = f"{STATE_DIR}/ghostty-otel-heartbeat"
-
-# --- State machine ---
 SPAN_STATE_MAP = {
     "claude_code.llm_request": "calling_llm",
     "claude_code.tool": "tool_running",
@@ -49,57 +38,197 @@ SPAN_STATE_MAP = {
     "claude_code.interaction": "idle",
 }
 
+# session.id → session_key mapping (in-memory, refreshed from disk)
+_sid_map_lock = threading.Lock()
+_sid_map = {}  # session_id → session_key
+_sid_map_mtime = 0  # last scan time
 
-def write_state(state: str, meta: dict = None):
-    """Write OTEL state to LLM-active file (heartbeat reads this).
-    Also updates the primary ghostty state file for OSC 9;4 emission."""
 
-    entry = {
-        "state": state,
-        "ts": datetime.now().isoformat(),
-    }
-    if meta:
-        entry["meta"] = meta
+class HoldTimer:
+    """Per-session hold timer for idle suppression.
 
-    # 1. Write LLM-active file (this is what the heartbeat polls)
-    #    Only update for LLM-calling states; clear on idle/waiting.
-    if state == "calling_llm":
-        Path(LLM_ACTIVE_FILE).touch()
-    elif state in ("waiting_input", "idle"):
-        # Clear the LLM-active file when Claude stops calling LLM
+    LLM-pending aware: when the last busy span was calling_llm (no
+    subsequent tool/input span), the timer re-arms instead of flushing
+    idle. This prevents premature idle during slow upstream API calls.
+    """
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._busy_until = 0.0
+        self._has_been_busy = False
+        self._defer_timer = None
+        self._safety_timer = None
+        self._session_key = None  # set when first used
+        self._llm_pending = False  # True after calling_llm, cleared by tool/input
+        self._llm_rearms = 0       # re-arm counter (safety cap)
+
+    def update(self, is_busy: bool, session_key: str, is_llm: bool = False):
+        with self._lock:
+            if not self._session_key:
+                self._session_key = session_key
+            if is_busy:
+                self._has_been_busy = True
+                self._busy_until = time.monotonic() + BUSY_HOLD_SECONDS
+                if is_llm:
+                    self._llm_pending = True
+                    self._llm_rearms = 0
+                else:
+                    # tool_running / tool_exec → LLM responded, clear pending
+                    self._llm_pending = False
+                    self._llm_rearms = 0
+                if self._defer_timer:
+                    self._defer_timer.cancel()
+                    self._defer_timer = None
+                # Safety net: force idle if no new busy spans arrive
+                if self._safety_timer:
+                    self._safety_timer.cancel()
+                self._safety_timer = threading.Timer(
+                    BUSY_HOLD_SECONDS, self._flush_idle
+                )
+                self._safety_timer.daemon = True
+                self._safety_timer.start()
+            else:
+                if not self._has_been_busy:
+                    return True  # Swallow premature idle
+                if time.monotonic() < self._busy_until:
+                    delay = self._busy_until - time.monotonic()
+                    if self._defer_timer:
+                        self._defer_timer.cancel()
+                    self._defer_timer = threading.Timer(delay, self._flush_idle)
+                    self._defer_timer.daemon = True
+                    self._defer_timer.start()
+                    return True  # Deferred
+                # Hold period expired — cancel safety timer, caller writes idle
+                if self._safety_timer:
+                    self._safety_timer.cancel()
+                    self._safety_timer = None
+        return False
+
+    def _flush_idle(self):
+        with self._lock:
+            self._defer_timer = None
+            self._safety_timer = None
+            key = self._session_key
+            llm_pending = self._llm_pending
+            rearms = self._llm_rearms
+        if not key:
+            return
+        # LLM pending: re-arm timer instead of flushing idle.
+        # Claude sent idle span but LLM response hasn't arrived yet.
+        # Keep re-arming until a tool/input span clears _llm_pending,
+        # or we hit the safety cap (prevents orphan busy state forever).
+        if llm_pending and rearms < LLM_PENDING_MAX_REARMS:
+            with self._lock:
+                self._llm_rearms = rearms + 1
+                self._safety_timer = threading.Timer(
+                    BUSY_HOLD_SECONDS, self._flush_idle
+                )
+                self._safety_timer.daemon = True
+                self._safety_timer.start()
+            return
+        # Guard: don't stomp on waiting_input or already-idle states
+        state_file = f"{STATE_DIR}/ghostty-indicator-state-{key}.txt"
         try:
-            os.remove(LLM_ACTIVE_FILE)
-        except FileNotFoundError:
+            with open(state_file, "r") as f:
+                current = f.read().strip().split(":")[0]
+            if current in ("idle", "waiting_input"):
+                return
+        except (OSError, IOError):
             pass
+        write_state("idle", {}, key)
 
-    # 2. Write to ghostty state file — OTEL is the authoritative source.
-    #    Every span writes state with metadata (tool name, model, success/failure).
-    #    Hooks may also write, but OTEL overwrites with richer data.
-    tmp = STATE_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(entry, f)
-    os.rename(tmp, STATE_FILE)
+    def clear_timers(self):
+        with self._lock:
+            if self._defer_timer:
+                self._defer_timer.cancel()
+                self._defer_timer = None
+            if self._safety_timer:
+                self._safety_timer.cancel()
+                self._safety_timer = None
 
-    # 3. Log if configured
+
+# Per-session hold timers: session_id → HoldTimer
+_hold_timers_lock = threading.Lock()
+_hold_timers = {}
+
+
+def get_hold_timer(session_id: str) -> HoldTimer:
+    with _hold_timers_lock:
+        if session_id not in _hold_timers:
+            _hold_timers[session_id] = HoldTimer()
+        return _hold_timers[session_id]
+
+
+def refresh_sid_map():
+    """Scan /tmp/ghostty-sid-* files to build session.id → session_key mapping."""
+    global _sid_map, _sid_map_mtime
+    now = time.monotonic()
+    # Refresh at most once per second
+    if now - _sid_map_mtime < 1.0:
+        return
+    with _sid_map_lock:
+        _sid_map_mtime = now
+        for f in glob.glob(f"{STATE_DIR}/ghostty-sid-*"):
+            try:
+                sk = os.path.basename(f).replace("ghostty-sid-", "", 1)
+                with open(f, "r") as fh:
+                    sid = fh.read().strip()
+                if sid and sk:
+                    _sid_map[sid] = sk
+            except (OSError, IOError):
+                pass
+
+
+def get_session_key(session_id: str) -> str:
+    """Look up session_key from session.id. Returns None if unregistered."""
+    refresh_sid_map()
+    with _sid_map_lock:
+        if session_id in _sid_map:
+            return _sid_map[session_id]
+    return None
+
+
+def write_state(state: str, meta: dict, session_key: str):
+    """Write state to per-session file."""
+    if not session_key:
+        return
+    # Build rich state text
+    rich = state
+    if meta:
+        parts = []
+        for k in ("tool", "model", "success"):
+            if k in meta and meta[k]:
+                parts.append(str(meta[k]))
+        if parts:
+            rich = f"{state}:{':'.join(parts)}"
+
+    txt_path = f"{STATE_DIR}/ghostty-indicator-state-{session_key}.txt"
+    tmp_path = txt_path + ".tmp"
+    try:
+        with open(tmp_path, "w") as f:
+            f.write(rich + "\n")
+        os.rename(tmp_path, txt_path)
+    except (OSError, IOError):
+        pass
+
     if LOG_FILE:
-        with open(LOG_FILE, "a") as f:
-            f.write(json.dumps(entry) + "\n")
+        try:
+            with open(LOG_FILE, "a") as f:
+                f.write(f"[{session_key}] {rich}\n")
+        except (OSError, IOError):
+            pass
 
 
 def extract_span_info(span: dict) -> tuple:
-    """Extract span name and key attributes."""
+    """Extract span name and attributes."""
     name = span.get("name", "")
     attrs = {}
     for attr in span.get("attributes", []):
         key = attr.get("key", "")
         val = attr.get("value", {})
-        # Unwrap the typed value
         if "stringValue" in val:
             attrs[key] = val["stringValue"]
         elif "intValue" in val:
             attrs[key] = val["intValue"]
-        elif "doubleValue" in val:
-            attrs[key] = val["doubleValue"]
         elif "boolValue" in val:
             attrs[key] = val["boolValue"]
     return name, attrs
@@ -107,7 +236,7 @@ def extract_span_info(span: dict) -> tuple:
 
 class OTLPHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        pass  # Suppress default logging
+        pass
 
     def _respond(self, code=200):
         self.send_response(code)
@@ -116,38 +245,65 @@ class OTLPHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(b"{}")
 
     def _handle(self):
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length) if length > 0 else b""
-
-        if not body:
-            self._respond()
-            return
-
         try:
-            data = json.loads(body)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length > 0 else b""
+
+            if not body:
+                self._respond()
+                return
+
+            try:
+                data = json.loads(body)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._respond()
+                return
+
+            # Process traces
+            if "resourceSpans" in data:
+                for rs in data["resourceSpans"]:
+                    for ss in rs.get("scopeSpans", []):
+                        for span in ss.get("spans", []):
+                            try:
+                                name, attrs = extract_span_info(span)
+                                state = SPAN_STATE_MAP.get(name)
+                                if not state:
+                                    continue
+
+                                # Route to correct session
+                                sid = attrs.get("session.id", "")
+                                sk = get_session_key(sid) if sid else None
+                                if not sk:
+                                    continue  # No session registered yet
+
+                                timer = get_hold_timer(sid)
+
+                                if state == "idle":
+                                    # Idle: defer through HoldTimer to prevent
+                                    # premature idle between LLM responses
+                                    deferred = timer.update(False, sk)
+                                    if not deferred:
+                                        # Hold expired — safe to write idle
+                                        write_state(state, attrs, sk)
+                                    # else: HoldTimer will flush_idle later
+                                elif state == "waiting_input":
+                                    # waiting_input → ON immediately, reset safety net timer
+                                    timer.clear_timers()
+                                    write_state(state, attrs, sk)
+                                else:
+                                    # Busy (calling_llm, tool_running, tool_exec):
+                                    # ON immediately, extend safety net timer.
+                                    # is_llm=True for calling_llm so HoldTimer knows
+                                    # LLM response is pending (may re-arm on idle).
+                                    is_llm = (state == "calling_llm")
+                                    timer.update(True, sk, is_llm=is_llm)
+                                    write_state(state, attrs, sk)
+                            except Exception:
+                                pass
+        except Exception:
+            pass
+        finally:
             self._respond()
-            return
-
-        # Process traces
-        if "resourceSpans" in data:
-            for rs in data["resourceSpans"]:
-                for ss in rs.get("scopeSpans", []):
-                    for span in ss.get("spans", []):
-                        name, attrs = extract_span_info(span)
-                        state = SPAN_STATE_MAP.get(name)
-                        if state:
-                            meta = {}
-                            if state == "calling_llm":
-                                meta["model"] = attrs.get("model", "")
-                                meta["ttft_ms"] = attrs.get("ttft_ms", "")
-                            elif state == "tool_running":
-                                meta["tool"] = attrs.get("tool_name", "")
-                            elif state == "tool_exec":
-                                meta["success"] = attrs.get("success", "")
-                            write_state(state, meta)
-
-        self._respond()
 
     def do_POST(self):
         self._handle()
@@ -156,32 +312,45 @@ class OTLPHandler(http.server.BaseHTTPRequestHandler):
         self._handle()
 
 
-class ReusableTCPServer(socketserver.TCPServer):
+class ReusableTCPServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     allow_reuse_port = True
+    daemon_threads = True
 
 
 def main():
-    # Graceful shutdown
     def shutdown(signum, frame):
-        write_state("idle", {"reason": "shutdown"})
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
-    # Write initial state
-    write_state("idle", {"reason": "listener_start"})
+    # Clean stale busy states from previous listener crash
+    for f in glob.glob(f"{STATE_DIR}/ghostty-indicator-state-*.txt"):
+        try:
+            with open(f, "r") as fh:
+                content = fh.read().strip()
+            base = content.split(":")[0] if content else ""
+            if base in ("calling_llm", "tool_running", "tool_exec", "working", "tool"):
+                with open(f, "w") as fh:
+                    fh.write("idle\n")
+        except (OSError, IOError):
+            pass
+
+    # Clean orphan state files without .txt extension
+    for f in glob.glob(f"{STATE_DIR}/ghostty-indicator-state-*"):
+        if not f.endswith(".txt") and not f.endswith(".tmp"):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
 
     with ReusableTCPServer(("", PORT), OTLPHandler) as httpd:
-        print(f"ghostty-otel listening on :{PORT}", flush=True)
-        print(f"state file: {STATE_FILE}", flush=True)
+        print(f"ghostty-otel listening on :{PORT} (multi-session)", flush=True)
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
             pass
-
-    write_state("idle", {"reason": "listener_stop"})
 
 
 if __name__ == "__main__":

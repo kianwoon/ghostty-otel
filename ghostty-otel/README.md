@@ -1,50 +1,57 @@
 # ghostty-otel
 
-OpenTelemetry-based state detection for the [Ghostty](https://ghostty.org) terminal indicator.
+OpenTelemetry-based indicator control for the [Ghostty](https://ghostty.org) terminal.
 
-Captures Claude Code's OTEL spans (`llm_request`, `tool` calls, `blocked_on_user`) to drive real-time busy/idle notification states — filling the gap where Claude Code hooks don't fire during extended thinking or API streaming.
+Receives Claude Code's OTEL spans in real time and **directly controls the Ghostty indicator** via OSC 9;4 sequences — providing sub-5ms indicator response with rich metadata about what Claude is doing.
 
-## How It Works
+## What It Detects
+
+| OTEL Span | State | OSC Code | Indicator |
+|-----------|-------|----------|-----------|
+| `claude_code.llm_request` | `calling_llm` | `3` (busy) | ON |
+| `claude_code.tool` | `tool_running` | `3` (busy) | ON |
+| `claude_code.tool.execution` | `tool_exec` | `3` (busy) | ON |
+| `claude_code.tool.blocked_on_user` | `waiting_input` | `0` (clear) | OFF |
+| `claude_code.interaction` | `idle` | `0` (clear) | OFF |
+
+## Architecture
 
 ```
-Claude Code ──OTEL spans──▶ otl-listener.py ──state file──▶ ghostty-state.sh heartbeat ──▶ Ghostty indicator
+OTEL spans ──▶ otel-listener.py ──┬── OSC 9;4 ──▶ Ghostty indicator (PRIMARY)
+                                   ├── .json state file (rich metadata)
+                                   ├── .txt state file  (plain text compat)
+                                   ├── sentinel file    (heartbeat compat)
+                                   ├── heartbeat thread (re-emit every 3s)
+                                   └── watchdog thread  (liveness signal)
+
+Hooks ──▶ ghostty-state.sh (COMPLEMENT only):
+  PreCompact       → keepalive (OTEL doesn't see compaction)
+  PostToolUseFail  → error indicator (red)
+  SessionStart     → clear indicator + start OTEL listener
+  SessionEnd       → done (safety net)
+  Notification     → done (faster than OTEL idle span)
 ```
 
-### Detection Chain
+`prompt-submit.sh` emits OSC 9;4;3 immediately on user input — covers the gap before the first OTEL span arrives.
 
-1. **SessionStart hook** starts `otel-listener.py` (lightweight HTTP server on port 4318)
-2. **Listener** receives OTEL spans from Claude Code and writes state to `/tmp/ghostty-llm-active-{SESSION_KEY}`
-3. **Heartbeat** (in `ghostty-state.sh`) polls the LLM-active file every 3s
-4. **Indicator** stays ON while LLM-active file exists, clears when Claude goes idle
+## State Files
 
-### Supported States
+Each session writes to `${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}`:
 
-| OTEL Span | State File | Indicator |
-|-----------|-----------|-----------|
-| `claude_code.llm_request` | `llm-active` created | ON (busy) |
-| `claude_code.tool` | state updated | ON (busy) |
-| `claude_code.tool.blocked_on_user` | `llm-active` removed | OFF (idle) |
-| `claude_code.interaction` | `llm-active` removed | OFF (idle) |
-
-## Prerequisites
-
-- [Ghostty](https://ghostty.org) terminal emulator
-- Claude Code CLI
-- Python 3 (for `otel-listener.py`)
-- `ghostty-state.sh` hook system (part of [ghostty-claude-hooks](https://github.com/kianwoonwong/ghostty-claude-hooks))
+| File | Format | Purpose |
+|------|--------|---------|
+| `.json` | `{"state":"calling_llm","ts":"...","meta":{"model":"..."}}` | Rich metadata for external consumers |
+| `.txt` | `working\n` or `done\n` | Plain text for ghostty-state.sh backward compat |
 
 ## Installation
 
-1. Install as a Claude Code plugin:
-   ```bash
-   claude plugin add kianwoonwong/ghostty-otel
-   ```
+```bash
+claude plugin add kianwoonwong/ghostty-otel
+```
 
-2. Ensure `ghostty-state.sh` is configured with OTEL LLM-active file detection (the heartbeat checks `/tmp/ghostty-llm-active-{SESSION_KEY}`).
+That's it. The plugin auto-configures OTEL telemetry. **No manual settings.json edits needed.**
 
 ## Configuration
-
-### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -54,35 +61,20 @@ Claude Code ──OTEL spans──▶ otl-listener.py ──state file──▶ 
 
 ### Session Key
 
-Derived from TTY device (same as `ghostty-state.sh`):
+Derived from TTY device — ensures multiple Claude Code sessions in different terminals get independent indicators:
 - `tty` command → basename of `/dev/pts/N` or `/dev/ttysNNN`
 - Falls back to `ps -o tty=` → basename
 - Falls back to `"tty"`
 
-This ensures multiple Claude Code sessions in different terminals get independent indicators.
-
-## Architecture
-
-```
-┌─────────────┐    OTEL spans     ┌──────────────────┐    state file    ┌──────────────────┐
-│ Claude Code  │ ───────────────▶ │ otl-listener.py  │ ──────────────▶ │ /tmp/ghostty-*   │
-│ (OTEL SDK)   │  :4318 HTTP/JSON │ (OTLP receiver)  │  llm-active flag │ (heartbeat reads) │
-└─────────────┘                   └──────────────────┘                  └──────────────────┘
-                                                                            │
-                                                                            ▼
-                                                                   ┌──────────────────┐
-                                                                   │ ghostty-state.sh  │
-                                                                   │ heartbeat loop    │
-                                                                   │ → OSC 9;4 emit   │
-                                                                   └──────────────────┘
-```
-
 ## Performance
 
-- **OTEL listener**: <5ms per span (file I/O only)
-- **Heartbeat check**: stat() syscall (~1ms) every 3s
-- **No blocking**: Listener is async HTTP server, state writes are atomic (tmp+rename)
-- **Auto-cleanup**: Listener exits on SIGTERM/SIGINT, removes state files on shutdown
+- **OTEL listener**: <5ms per span (file I/O + OSC emit)
+- **OSC emission**: direct TTY write (no subprocess)
+- **State writes**: atomic via tmp+rename
+- **Heartbeat**: daemon thread re-emits OSC every 3s while active
+- **Watchdog**: writes timestamp every 10s — other processes can detect dead listener
+- **prompt-submit.sh**: <50ms (file I/O + OSC emit, no subprocess)
+- **tmux passthrough**: automatic DCS wrapping when `TMUX` is set
 
 ## License
 

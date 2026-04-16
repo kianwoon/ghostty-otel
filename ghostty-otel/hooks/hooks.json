@@ -1,5 +1,5 @@
 {
-  "description": "Start OTEL listener and manage Ghostty indicator state",
+  "description": "Ghostty terminal indicator control via hooks + OTEL metadata",
   "hooks": {
     "SessionStart": [
       {
@@ -20,6 +20,30 @@
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/prompt-submit.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/notification-done.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/session-cleanup.sh",
             "timeout": 5
           }
         ]

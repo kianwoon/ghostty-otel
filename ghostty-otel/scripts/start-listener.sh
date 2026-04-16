@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Start the OTEL listener daemon for ghostty-otel plugin.
-# Called from SessionStart hook. Safe to call multiple times (idempotent).
+# Called from SessionStart + prompt-submit.sh health check.
+# Safe to call multiple times — idempotent.
 set -u
 
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -8,60 +9,89 @@ PORT="${GHOSTTY_OTEL_PORT:-4318}"
 STATE_DIR="${GHOSTTY_OTEL_STATE_DIR:-/tmp}"
 LOG_FILE="${GHOSTTY_OTEL_LOG:-/tmp/ghostty-otel.log}"
 
-# Derive session key from TTY (same logic as ghostty-state.sh)
-_tty=$(tty 2>/dev/null) || true
-if [ -z "$_tty" ] || [ "$_tty" = "not a tty" ]; then
-  _tty_ps=$(ps -o tty= -p $PPID 2>/dev/null | tr -d ' ') || true
-  if [ -n "$_tty_ps" ] && [ "$_tty_ps" != "??" ]; then
-    SESSION_KEY="$(echo "$_tty_ps" | tr '/' '_' | tr -cd 'a-zA-Z0-9_-')"
-  else
-    SESSION_KEY="tty"
-  fi
+# --- Session key + TTY path derivation (single source of truth) ---
+# Prefer env vars (passed by watcher auto-recovery) over session-key.sh
+if [ -n "${GHOSTTY_OTEL_SESSION_KEY:-}" ] && [ -n "${GHOSTTY_OTEL_TTY:-}" ]; then
+  TTY_PATH="$GHOSTTY_OTEL_TTY"
+  SESSION_KEY="$GHOSTTY_OTEL_SESSION_KEY"
 else
-  SESSION_KEY="$(basename "$_tty" | tr '/' '_' | tr -cd 'a-zA-Z0-9_-')"
+  _SESSION_INFO="$(bash "${PLUGIN_ROOT}/scripts/session-key.sh")"
+  TTY_PATH="$(echo "$_SESSION_INFO" | sed -n '1p')"
+  SESSION_KEY="$(echo "$_SESSION_INFO" | sed -n '2p')"
 fi
 
-PID_FILE="${STATE_DIR}/ghostty-otel-${SESSION_KEY}.pid"
+# Listener is a singleton — use global PID file (not per-session)
+GLOBAL_PID_FILE="${STATE_DIR}/ghostty-otel.pid"
 
-# Check if already running
-if [ -f "$PID_FILE" ]; then
-  OLD_PID=$(cat "$PID_FILE" 2>/dev/null)
-  if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
-    # Already running — just ensure OTEL env is set
-    exit 0
+# --- Helper: ensure watcher is running (with lock) ---
+ensure_watcher() {
+  local WATCHER_PID_FILE="${STATE_DIR}/ghostty-watcher-${SESSION_KEY}.pid"
+  local WATCHER_LOCK="${STATE_DIR}/ghostty-watcher-${SESSION_KEY}.lock"
+
+  if [ -f "$WATCHER_PID_FILE" ]; then
+    local _wpid=$(cat "$WATCHER_PID_FILE" 2>/dev/null) || true
+    if [ -n "$_wpid" ] && kill -0 "$_wpid" 2>/dev/null; then
+      return  # watcher alive
+    fi
   fi
-  rm -f "$PID_FILE"
+
+  # Use mkdir as atomic lock to prevent duplicate watchers
+  if ! mkdir "$WATCHER_LOCK" 2>/dev/null; then
+    return  # Another process is already starting the watcher
+  fi
+
+  # Double-check after acquiring lock
+  if [ -f "$WATCHER_PID_FILE" ]; then
+    local _wpid2=$(cat "$WATCHER_PID_FILE" 2>/dev/null) || true
+    if [ -n "$_wpid2" ] && kill -0 "$_wpid2" 2>/dev/null; then
+      rmdir "$WATCHER_LOCK" 2>/dev/null || true
+      return
+    fi
+  fi
+
+  GHOSTTY_OTEL_TTY="$TTY_PATH" \
+  GHOSTTY_OTEL_SESSION_KEY="$SESSION_KEY" \
+  nohup bash "${PLUGIN_ROOT}/scripts/otel-watcher.sh" > /dev/null 2>&1 &
+
+  rmdir "$WATCHER_LOCK" 2>/dev/null || true
+}
+
+# Check if our listener PID is alive
+if [ -f "$GLOBAL_PID_FILE" ]; then
+  OLD_PID=$(cat "$GLOBAL_PID_FILE" 2>/dev/null)
+  if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+    ensure_watcher
+    exit 0  # listener alive, watcher ensured
+  fi
+  rm -f "$GLOBAL_PID_FILE"
 fi
 
-# Start listener in background
+# Check if ANY otel-listener is already on this port
+if lsof -i :"$PORT" 2>/dev/null | grep -q LISTEN; then
+  _other=$(lsof -t -i :"$PORT" 2>/dev/null | head -1)
+  if [ -n "$_other" ]; then
+    echo "$_other" > "$GLOBAL_PID_FILE"
+    ensure_watcher
+    exit 0  # reuse existing listener
+  fi
+fi
+
+# Start listener in background (nohup so it survives hook exit)
 GHOSTTY_OTEL_PORT="$PORT" \
 GHOSTTY_OTEL_STATE_DIR="$STATE_DIR" \
-GHOSTTY_OTEL_SESSION_KEY="$SESSION_KEY" \
+GHOSTTY_OTEL_SESSION_KEY="global" \
 GHOSTTY_OTEL_LOG="$LOG_FILE" \
-python3 "${PLUGIN_ROOT}/scripts/otel-listener.py" >/dev/null 2>&1 &
+nohup python3 "${PLUGIN_ROOT}/scripts/otel-listener.py" > /dev/null 2>&1 &
 LISTENER_PID=$!
-echo "$LISTENER_PID" > "$PID_FILE"
+echo "$LISTENER_PID" > "$GLOBAL_PID_FILE"
 
 # Wait briefly to verify startup
 sleep 0.3
 if ! kill -0 "$LISTENER_PID" 2>/dev/null; then
-  rm -f "$PID_FILE"
+  rm -f "$GLOBAL_PID_FILE"
   exit 1
 fi
 
-# Write OTEL env vars to CLAUDE_ENV_FILE (persists for session)
-if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
-  # Only add if not already present
-  if ! grep -q "OTEL_EXPORTER_OTLP_ENDPOINT" "$CLAUDE_ENV_FILE" 2>/dev/null; then
-    cat >> "$CLAUDE_ENV_FILE" << EOF
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:${PORT}
-export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
-export OTEL_TRACES_EXPORTER=otlp
-export OTEL_SERVICE_NAME=claude-code
-export CLAUDE_CODE_ENABLE_TELEMETRY=1
-export CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1
-EOF
-  fi
-fi
-
+# Also ensure watcher starts
+ensure_watcher
 exit 0
