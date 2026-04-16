@@ -26,6 +26,31 @@ STATE_FILE="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}"
 PID_FILE="${STATE_DIR}/ghostty-watcher-${SESSION_KEY}.pid"
 LISTENER_PID_FILE="${STATE_DIR}/ghostty-otel-${SESSION_KEY}.pid"
 WATCHER_LOG="${GHOSTTY_OTEL_WATCHER_LOG:-/tmp/ghostty-watcher-${SESSION_KEY}.log}"
+MAX_LOG_BYTES=300
+
+# Rotate log if it exceeds MAX_LOG_BYTES (snap to line boundary)
+rotate_log() {
+  local log="${1:-}"
+  if [ -n "$log" ] && [ -f "$log" ]; then
+    local size
+    size=$(wc -c < "$log" 2>/dev/null | tr -d ' ') || size=0
+    if [ "$size" -gt "$MAX_LOG_BYTES" ]; then
+      # Keep last MAX_LOG_BYTES bytes, drop first line to snap to line boundary
+      tail -c "$MAX_LOG_BYTES" "$log" | tail -n +2 > "${log}.tmp" 2>/dev/null && \
+        mv "${log}.tmp" "$log" 2>/dev/null || true
+    fi
+  fi
+}
+
+# Write to log with automatic rotation
+log_write() {
+  local msg="$1"
+  local log="${2:-$WATCHER_LOG}"
+  if [ -n "$log" ]; then
+    rotate_log "$log"
+    echo "$msg" >> "$log" 2>/dev/null || true
+  fi
+}
 
 # --- OSC 9;4 emit (tmux-aware) ---
 # Uses GHOSTTY_OTEL_TTY if set (captured before nohup detachment), else /dev/tty
@@ -82,7 +107,7 @@ fi
 
 echo $$ > "$PID_FILE"
 rmdir "$WATCHER_LOCK" 2>/dev/null || true
-echo "[$(date +%H:%M:%S)] watcher started pid=$$ key=$SESSION_KEY tty=${_otel_tty}" >> "$WATCHER_LOG" 2>/dev/null || true
+log_write "[$(date +%H:%M:%S)] watcher started pid=$$ key=$SESSION_KEY tty=${_otel_tty}"
 
 # --- Main poll loop ---
 # Ghostty resets OSC 9;4 state after ~15s of inactivity.
@@ -145,7 +170,7 @@ while true; do
     fi
     # Debug log (only on state change to avoid spam)
     if [ "$_state_changed" -eq 1 ]; then
-      echo "[$(date +%H:%M:%S)] state=${STATE_TEXT} osc=${OSC} tty=${_otel_tty}" >> "$WATCHER_LOG" 2>/dev/null || true
+      log_write "[$(date +%H:%M:%S)] state=${STATE_TEXT} osc=${OSC} tty=${_otel_tty}"
     fi
   fi
 

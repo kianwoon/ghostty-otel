@@ -25,6 +25,7 @@ import socketserver
 PORT = int(os.environ.get("GHOSTTY_OTEL_PORT", "4318"))
 STATE_DIR = os.environ.get("GHOSTTY_OTEL_STATE_DIR", "/tmp")
 LOG_FILE = os.environ.get("GHOSTTY_OTEL_LOG", "")
+MAX_LOG_BYTES = 300
 BUSY_HOLD_SECONDS = float(os.environ.get("GHOSTTY_OTEL_HOLD_SECONDS", "60"))
 # Maximum LLM-pending re-arms before forcing idle (safety net).
 # Each re-arm adds BUSY_HOLD_SECONDS. 10 × 60s = 10min max wait.
@@ -228,6 +229,23 @@ def write_state(state: str, meta: dict, session_key: str):
 
     if LOG_FILE:
         try:
+            # Rotate: keep last MAX_LOG_BYTES, snap to first newline to avoid partial lines
+            try:
+                size = os.path.getsize(LOG_FILE)
+                if size > MAX_LOG_BYTES:
+                    with open(LOG_FILE, "r") as f:
+                        content = f.read()
+                    # Take last MAX_LOG_BYTES, skip first (partial) line
+                    chunk = content[-(MAX_LOG_BYTES):]
+                    nl_pos = chunk.find("\n")
+                    if nl_pos >= 0:
+                        kept = chunk[nl_pos + 1:]  # skip partial first line
+                    else:
+                        kept = chunk
+                    with open(LOG_FILE, "w") as f:
+                        f.write(kept)
+            except (OSError, IOError):
+                pass
             with open(LOG_FILE, "a") as f:
                 f.write(f"[{session_key}] {rich}\n")
         except (OSError, IOError):
