@@ -1,5 +1,5 @@
 {
-  "description": "Start/stop OTEL listener daemon and set telemetry env vars",
+  "description": "Start OTEL listener and manage Ghostty indicator state",
   "hooks": {
     "SessionStart": [
       {
@@ -8,6 +8,18 @@
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/start-listener.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/prompt-submit.sh",
             "timeout": 5
           }
         ]
