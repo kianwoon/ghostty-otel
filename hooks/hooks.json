@@ -1,6 +1,18 @@
 {
   "description": "Ghostty terminal indicator control via hooks + OTEL metadata",
   "hooks": {
+    "StopFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/main-agent-proceed.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "SubagentStop": [
       {
         "matcher": "*",
