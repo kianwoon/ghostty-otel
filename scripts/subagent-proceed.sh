@@ -20,8 +20,8 @@ fi
 case "$current" in
   calling_llm|tool_running|tool_exec|subagent_idle)
     # Subagent stopped while still busy, or already detected as stale
-    echo "proceed — continue your previous task" >&2
-    exit 2
+    echo '{"decision":"block","reason":"proceed — continue your previous task"}'
+    exit 0
     ;;
 esac
 exit 0
