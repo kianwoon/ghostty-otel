@@ -118,6 +118,8 @@ class HoldTimer:
             key = self._session_key
             llm_pending = self._llm_pending
             rearms = self._llm_rearms
+            has_been_busy = self._has_been_busy
+            last_completed = self._last_completed
         if not key:
             return
         # LLM pending: re-arm timer instead of flushing idle.
@@ -131,7 +133,7 @@ class HoldTimer:
             try:
                 with open(state_file, "r") as f:
                     current = f.read().strip().split(":")[0]
-                if current in ("idle", "waiting_input", "done"):
+                if current in ("idle", "waiting_input", "done", "subagent_idle"):
                     # External authority (stop hook) cleared the state —
                     # stop re-arming and cancel the pending flag.
                     with self._lock:
@@ -153,11 +155,15 @@ class HoldTimer:
         try:
             with open(state_file, "r") as f:
                 current = f.read().strip().split(":")[0]
-            if current in ("idle", "waiting_input"):
+            if current in ("idle", "waiting_input", "subagent_idle"):
                 return
         except (OSError, IOError):
             pass
-        write_state("idle", {}, key)
+        # Detect stale idle: busy→idle without completion marker
+        if has_been_busy and not last_completed:
+            write_state("subagent_idle", {}, key)
+        else:
+            write_state("idle", {}, key)
 
     def clear_timers(self):
         with self._lock:
