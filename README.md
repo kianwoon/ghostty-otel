@@ -76,6 +76,7 @@ That's it. The plugin auto-configures OTEL telemetry via `settings.json`. No man
 | OTEL listener (Python HTTP server) | `scripts/otel-listener.py` |
 | Per-session watcher (OSC emitter) | `scripts/otel-watcher.sh` |
 | Prompt submit hook (gap coverage) | `scripts/prompt-submit.sh` |
+| Subagent auto-proceed hooks | `scripts/subagent-proceed.sh`, `scripts/teammate-proceed.sh` |
 | Session lifecycle hooks | `scripts/start-listener.sh`, `scripts/session-cleanup.sh` |
 | Session key derivation | `scripts/session-key.sh` |
 
@@ -85,6 +86,8 @@ That's it. The plugin auto-configures OTEL telemetry via `settings.json`. No man
 |------|--------|---------|
 | `SessionStart` | `start-listener.sh` | Start OTEL listener + watcher |
 | `UserPromptSubmit` | `prompt-submit.sh` | Immediate OSC emit + listener health check |
+| `SubagentStop` | `subagent-proceed.sh` | Auto-proceed stalled subagents |
+| `TeammateIdle` | `teammate-proceed.sh` | Auto-proceed stalled teammates |
 | `Notification` | `notification-done.sh` | Reserved (currently no-op) |
 | `SessionEnd` | `session-cleanup.sh` | Clean up state files + watcher |
 
@@ -108,6 +111,7 @@ calling_llm:MiniMax-M2.7[1m]:True
 tool_exec:Read
 tool_running:Bash
 waiting_input
+subagent_idle
 idle
 ```
 
@@ -122,6 +126,7 @@ Format: `state[:metadata...]` — one line, plain text.
 | `claude_code.tool.execution` | `tool_exec` | ON (busy) |
 | `claude_code.tool.blocked_on_user` | `waiting_input` | OFF (idle) |
 | `claude_code.interaction` | `idle` | OFF (idle, after hold) |
+| Stale idle (no completion) | `subagent_idle` | ON (osc=2, auto-proceed triggers) |
 
 ## Performance
 
