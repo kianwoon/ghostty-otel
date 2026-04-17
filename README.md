@@ -21,6 +21,7 @@ Claude Code can run for minutes on complex tasks — calling LLMs, executing too
 |-------------|-----------|--------------|
 | Calling the LLM | Busy (spinning) | `claude: calling_llm:MiniMax-M2.7[1m]` |
 | Running a tool | Busy (spinning) | `claude: tool_exec:Read` |
+| Subagent stalled mid-task | Idle (attention) | `claude: subagent_idle` |
 | Waiting for user input | Idle | `claude: idle` |
 | Turn complete | Idle | `claude: idle` |
 
