@@ -72,7 +72,8 @@ state_to_osc() {
     tool_running*)   echo 3 ;;
     tool_exec*)      echo 3 ;;
     working*)        echo 3 ;;   # legacy prompt-submit state
-    waiting_input)   echo 0 ;;
+    waiting_input)   echo 2 ;;
+    subagent_idle)   echo 2 ;;
     idle)            echo 0 ;;
     done)            echo 0 ;;   # fallback recovery state
     failure*)        echo 2 ;;
@@ -161,12 +162,12 @@ while true; do
     OSC=$(state_to_osc "$STATE_TEXT")
     # OSC 9;4: graphical progress bar
     emit "\033]9;4;${OSC}\033\\"
-    # OSC 2: window title with raw state text (e.g. "claude: tool_exec:Read")
-    TITLE_TEXT="$STATE_TEXT"
+    # OSC 2: window title with TTY and state
+    _tty_short="$(basename "$_otel_tty")"
     if [ "$OSC" = "0" ]; then
-      emit "\033]2;claude: idle\033\\"
+      emit "\033]2;${_tty_short} claude: idle\033\\"
     else
-      emit "\033]2;claude: ${TITLE_TEXT}\033\\"
+      emit "\033]2;${_tty_short} claude: ${STATE_TEXT}\033\\"
     fi
     # Debug log (only on state change to avoid spam)
     if [ "$_state_changed" -eq 1 ]; then

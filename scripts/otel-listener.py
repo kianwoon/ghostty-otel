@@ -9,7 +9,7 @@ State transitions:
   claude_code.tool                  → tool_running
   claude_code.tool.execution        → tool_exec
   claude_code.tool.blocked_on_user  → waiting_input
-  claude_code.interaction           → idle
+  claude_code.interaction           → waiting_input
 """
 
 import json
@@ -36,7 +36,7 @@ SPAN_STATE_MAP = {
     "claude_code.tool": "tool_running",
     "claude_code.tool.blocked_on_user": "waiting_input",
     "claude_code.tool.execution": "tool_exec",
-    "claude_code.interaction": "idle",
+    "claude_code.interaction": "waiting_input",
 }
 
 
@@ -52,6 +52,10 @@ class HoldTimer:
     LLM-pending aware: when the last busy span was calling_llm (no
     subsequent tool/input span), the timer re-arms instead of flushing
     idle. This prevents premature idle during slow upstream API calls.
+
+    Tracks _last_completed: set True on done/waiting_input, False on busy.
+    When idle arrives and _last_completed is False + _has_been_busy True,
+    the state is subagent_idle (stale — subagent went idle mid-task).
     """
     def __init__(self):
         self._lock = threading.Lock()
@@ -62,6 +66,7 @@ class HoldTimer:
         self._session_key = None  # set when first used
         self._llm_pending = False  # True after calling_llm, cleared by tool/input
         self._llm_rearms = 0       # re-arm counter (safety cap)
+        self._last_completed = False  # True when done/waiting_input; False when busy
 
     def update(self, is_busy: bool, session_key: str, is_llm: bool = False):
         with self._lock:
@@ -69,6 +74,7 @@ class HoldTimer:
                 self._session_key = session_key
             if is_busy:
                 self._has_been_busy = True
+                self._last_completed = False
                 self._busy_until = time.monotonic() + BUSY_HOLD_SECONDS
                 if is_llm:
                     self._llm_pending = True
@@ -323,7 +329,8 @@ class OTLPHandler(http.server.BaseHTTPRequestHandler):
                                         with open(state_file, "r") as sf:
                                             current = sf.read().strip().split(":")[0]
                                         if current in ("calling_llm", "tool_running",
-                                                       "tool_exec", "working"):
+                                                       "tool_exec", "working",
+                                                       "subagent_idle"):
                                             # New turn already started — discard
                                             # stale idle from previous turn
                                             continue
@@ -333,12 +340,19 @@ class OTLPHandler(http.server.BaseHTTPRequestHandler):
                                     # premature idle between LLM responses
                                     deferred = timer.update(False, sk)
                                     if not deferred:
-                                        # Hold expired — safe to write idle
-                                        write_state(state, attrs, sk)
+                                        # Hold expired — detect stale idle vs clean idle
+                                        if (timer._has_been_busy
+                                                and not timer._last_completed):
+                                            # Busy→idle without done: subagent stalled
+                                            write_state("subagent_idle", attrs, sk)
+                                        else:
+                                            # Clean idle (task completed normally)
+                                            write_state(state, attrs, sk)
                                     # else: HoldTimer will flush_idle later
                                 elif state == "waiting_input":
                                     # waiting_input → ON immediately, reset safety net timer
                                     timer.clear_timers()
+                                    timer._last_completed = True
                                     write_state(state, attrs, sk)
                                 elif state == "calling_llm":
                                     # OTEL llm_request spans arrive AFTER completion.
