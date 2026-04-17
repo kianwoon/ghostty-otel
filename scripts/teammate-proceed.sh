@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # TeammateIdle hook: detects stale idle (teammate went idle mid-task)
-# and auto-proceeds by exiting code 2 with a continue message.
+# and auto-proceeds via structured JSON decision output.
 # Input: JSON on stdin with last_assistant_message, agent_id, agent_type
 set -u
 
