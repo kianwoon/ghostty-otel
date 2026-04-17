@@ -17,9 +17,11 @@ if [ -f "$STATE_FILE" ]; then
   current=$(cat "$STATE_FILE" 2>/dev/null | tr -d '\n' | cut -d: -f1)
 fi
 
-if [ "$current" = "subagent_idle" ]; then
-  echo "proceed — continue your previous task" >&2
-  exit 2
-fi
-
+case "$current" in
+  calling_llm|tool_running|tool_exec|subagent_idle)
+    # Teammate stopped while still busy, or already detected as stale
+    echo "proceed — continue your previous task" >&2
+    exit 2
+    ;;
+esac
 exit 0
