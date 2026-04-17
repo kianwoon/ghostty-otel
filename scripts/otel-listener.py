@@ -30,6 +30,7 @@ BUSY_HOLD_SECONDS = float(os.environ.get("GHOSTTY_OTEL_HOLD_SECONDS", "60"))
 # Maximum LLM-pending re-arms before forcing idle (safety net).
 # Each re-arm adds BUSY_HOLD_SECONDS. 10 × 60s = 10min max wait.
 LLM_PENDING_MAX_REARMS = int(os.environ.get("GHOSTTY_OTEL_LLM_MAX_REARMS", "10"))
+LOOP_THRESHOLD = int(os.environ.get("GHOSTTY_OTEL_LOOP_THRESHOLD", "5"))
 
 SPAN_STATE_MAP = {
     "claude_code.llm_request": "calling_llm",
@@ -179,12 +180,28 @@ class HoldTimer:
 _hold_timers_lock = threading.Lock()
 _hold_timers = {}
 
+# Per-session consecutive-tool tracking for loop detection
+# session_key → {"tool": tool_name, "count": int}
+_consecutive_tools_lock = threading.Lock()
+_consecutive_tools = {}
+
 
 def get_hold_timer(session_id: str) -> HoldTimer:
     with _hold_timers_lock:
         if session_id not in _hold_timers:
             _hold_timers[session_id] = HoldTimer()
         return _hold_timers[session_id]
+
+
+def check_loop(tool_name: str, session_key: str) -> bool:
+    """Track consecutive same-tool executions. Returns True if looping."""
+    with _consecutive_tools_lock:
+        entry = _consecutive_tools.get(session_key)
+        if entry and entry["tool"] == tool_name:
+            entry["count"] += 1
+        else:
+            _consecutive_tools[session_key] = {"tool": tool_name, "count": 1}
+        return _consecutive_tools[session_key]["count"] >= LOOP_THRESHOLD
 
 
 def refresh_sid_map():
@@ -369,7 +386,11 @@ class OTLPHandler(http.server.BaseHTTPRequestHandler):
                                 else:
                                     # tool_running, tool_exec → write normally
                                     timer.update(True, sk, is_llm=False)
-                                    write_state(state, attrs, sk)
+                                    tool_name = attrs.get("tool.name", "")
+                                    if tool_name and check_loop(tool_name, sk):
+                                        write_state("looping", {"tool": tool_name}, sk)
+                                    else:
+                                        write_state(state, attrs, sk)
                             except Exception:
                                 pass
         except Exception:

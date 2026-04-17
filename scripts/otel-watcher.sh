@@ -74,6 +74,7 @@ state_to_osc() {
     working*)        echo 3 ;;   # legacy prompt-submit state
     waiting_input)   echo 2 ;;
     subagent_idle)   echo 2 ;;
+    looping*)        echo 2 ;;
     idle)            echo 0 ;;
     done)            echo 0 ;;   # fallback recovery state
     failure*)        echo 2 ;;

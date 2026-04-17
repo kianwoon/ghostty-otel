@@ -18,7 +18,7 @@ if [ -f "$STATE_FILE" ]; then
 fi
 
 case "$current" in
-  calling_llm|tool_running|tool_exec|subagent_idle)
+  calling_llm|tool_running|tool_exec|subagent_idle|looping)
     # Teammate stopped while still busy, or already detected as stale
     echo '{"decision":"block","reason":"proceed — continue your previous task"}'
     exit 0
