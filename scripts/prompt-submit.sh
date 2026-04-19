@@ -56,12 +56,7 @@ emit() {
   fi
 }
 
-# 1. Emit indicator ON immediately
-emit '\033]9;4;3\033\\'
-emit '\033]2;claude: calling_llm\033\\'
-
-# 2. Write state file only if currently idle/waiting — don't stomp on busy states
-#    from the listener (tool_running, etc.)
+# 1. Emit indicator + title only if currently idle — don't stomp busy states
 _current=""
 _sf="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt"
 if [ -f "$_sf" ]; then
@@ -69,7 +64,8 @@ if [ -f "$_sf" ]; then
 fi
 case "$_current" in
   waiting_input|idle|done|completed|""|subagent_idle)
-    # Only write calling_llm if session is in a non-busy state
+    emit '\033]9;4;3\033\\'
+    emit '\033]2;claude: calling_llm\033\\'
     _tmp="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt.tmp"
     echo "calling_llm" > "$_tmp" 2>/dev/null && mv "$_tmp" "${_sf}" 2>/dev/null || true
     ;;
