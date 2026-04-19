@@ -376,11 +376,10 @@ class OTLPHandler(http.server.BaseHTTPRequestHandler):
                                             write_state(state, attrs, sk)
                                     # else: HoldTimer will flush_idle later
                                 elif state == "waiting_input":
-                                    # waiting_input always wins — it's the latest lifecycle state.
-                                    # No guard needed: overwriting tool_running is correct behavior.
+                                    # End of turn — write "done" as the terminal state.
                                     timer.clear_timers()
                                     timer.mark_completed()
-                                    write_state(state, attrs, sk)
+                                    write_state("done", attrs, sk)
                                 elif state == "calling_llm":
                                     # OTEL llm_request spans arrive AFTER completion.
                                     # Writing calling_llm shows stale state - don't do it.
