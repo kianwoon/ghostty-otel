@@ -12,8 +12,9 @@ Claude Code can run for minutes on complex tasks — calling LLMs, executing too
 - You switch tabs and come back wondering: "Is Claude still working, or did it stall?"
 - An idle agent goes unnoticed while you wait for a response that's never coming
 - Tool failures happen silently while the indicator says everything is fine
+- A subagent plans tasks but stops before executing any of them
 
-**ghostty-otel solves this** by showing Claude's exact state in the terminal indicator and window title — updating in real time as the agent works.
+**ghostty-otel solves this** by showing Claude's exact state in the terminal indicator and window title — updating in real time as the agent works. The three-layer anti-stall system ensures agents keep working on their assigned tasks.
 
 ## What You See
 
@@ -32,12 +33,13 @@ Claude Code ──OTEL spans──▶ otel-listener.py ──state files──�
    │                              │                                │
    │                              ├── HoldTimer (60s)              ├── OSC 9;4 (progress bar)
    │                              ├── LLM-pending re-arm          └── OSC 2 (window title)
+   │                              ├── Loop detection              └── Keep-alive (3s)
    │                              └── Multi-session routing
    │
-   └── Also: UserPromptSubmit ──▶ prompt-submit.sh ──immediate OSC──▶ Ghostty (gap coverage)
+   └── Hooks ──▶ Anti-stall system ──▶ agents keep working
 ```
 
-### Key Features
+### Core Features
 
 **1. Anti-flapping HoldTimer**
 - Idle spans from Claude Code are deferred for 60 seconds before being written to the state file
@@ -60,17 +62,44 @@ Claude Code ──OTEL spans──▶ otel-listener.py ──state files──�
 **5. Gap coverage**
 - `UserPromptSubmit` hook emits OSC immediately on user input — covers the gap before the first OTEL span arrives (~100-200ms)
 
-**6. Task completeness validation**
-- `Stop` and `SubagentStop` prompt hooks review the transcript when agents consider stopping
-- Check if real tools were executed (not just LLM calls)
-- Check for failures or incomplete work
+### Three-Layer Anti-Stall System
+
+Claude Code agents sometimes stop prematurely — planning tasks without executing them, stalling mid-task, or yielding to user input when work remains. The anti-stall system prevents this with three independent layers:
+
+**Layer 1: Task completion validator** (`stop-validator.sh`)
+- Runs on `Stop` events
+- Parses transcript for task list patterns (`N tasks (X done, Y open)`)
+- Blocks stop when open tasks remain — forces Claude to keep working
+- Also checks for tool errors + incomplete executions
 - Guard: `stop_hook_active=true` allows stop to prevent infinite loops
 
-**7. Loop detection**
+**Layer 2: State-based auto-proceed** (`state-proceed.sh`)
+- Runs on every `UserPromptSubmit` event
+- Checks state file age: if `subagent_idle` for >60s or `waiting_input` for >90s
+- Forces proceed with context message explaining why
+
+**Layer 3: Anti-stall detector** (`anti-stall.sh`)
+- Runs on `SubagentStop` events
+- Detects "planning without executing" pattern (tasks created, no implementation tools run)
+- Detects subagents that stopped without any real tool calls
+- Injects continuation message: `"start implementing now"`
+
+### Additional Features
+
+**Loop detection**
 - Tracks consecutive identical tool executions per session
 - When same tool repeats `GHOSTTY_OTEL_LOOP_THRESHOLD` times (default 5) → `looping` state
 - `looping` → OSC 2 (red attention), triggers auto-proceed hooks
 - Configurable via `GHOSTTY_OTEL_LOOP_THRESHOLD` env var
+
+**Watcher resilience**
+- Max 3 listener restart attempts before graceful exit (prevents zombie watchers)
+- Atomic `mkdir` lock prevents duplicate watchers per TTY
+- Listener health check every 5s with automatic restart
+
+**Session-aware notifications**
+- `notification-done.sh` includes project name and TTY in notification subtitle
+- Multi-session awareness — you know which session finished
 
 ## Installation
 
@@ -88,21 +117,23 @@ That's it. The plugin auto-configures OTEL telemetry via `settings.json`. No man
 | OTEL listener (Python HTTP server) | `scripts/otel-listener.py` |
 | Per-session watcher (OSC emitter) | `scripts/otel-watcher.sh` |
 | Prompt submit hook (gap coverage) | `scripts/prompt-submit.sh` |
-| Subagent auto-proceed hooks | `scripts/subagent-proceed.sh`, `scripts/teammate-proceed.sh` |
+| Subagent auto-proceed hooks | `scripts/subagent-proceed.sh`, `scripts/teammate-proceed.sh`, `scripts/main-agent-proceed.sh` |
+| Anti-stall system | `scripts/anti-stall.sh`, `scripts/state-proceed.sh` |
+| Task completion validation | `scripts/stop-validator.sh`, `scripts/subagent-stop-validator.sh` |
 | Session lifecycle hooks | `scripts/start-listener.sh`, `scripts/session-cleanup.sh` |
 | Session key derivation | `scripts/session-key.sh` |
 
 ### Plugin hooks (auto-configured)
 
-| Hook | Script | Purpose |
-|------|--------|---------|
-| `Stop` | (prompt-based) | Validate task completeness before stopping |
-| `SessionStart` | `start-listener.sh` | Start OTEL listener + watcher |
-| `UserPromptSubmit` | `prompt-submit.sh` | Immediate OSC emit + listener health check |
-| `SubagentStop` | `subagent-proceed.sh` + (prompt) | Auto-proceed stalled subagents + validate completeness |
-| `TeammateIdle` | `teammate-proceed.sh` | Auto-proceed stalled teammates |
+| Hook | Scripts | Purpose |
+|------|---------|---------|
+| `Stop` | `stop-validator.sh` | Validate task completeness + block premature stops |
 | `StopFailure` | `main-agent-proceed.sh` | Auto-proceed main agent on stale idle |
-| `Notification` | `notification-done.sh` | Reserved (currently no-op) |
+| `SubagentStop` | `subagent-proceed.sh` + `anti-stall.sh` + `subagent-stop-validator.sh` | Fast state check + anti-stall + transcript completeness |
+| `TeammateIdle` | `teammate-proceed.sh` | Auto-proceed stalled teammates |
+| `SessionStart` | `start-listener.sh` | Start OTEL listener + per-session watcher |
+| `UserPromptSubmit` | `prompt-submit.sh` + `state-proceed.sh` | Immediate OSC emit + state-based auto-proceed |
+| `Notification` | `notification-done.sh` | Session-aware notifications (project + TTY) |
 | `SessionEnd` | `session-cleanup.sh` | Clean up state files + watcher |
 
 ## Configuration
@@ -165,6 +196,10 @@ Format: `state[:metadata...]` — one line, plain text.
 
 **Multiple sessions showing same state?**
 - Session key is derived from TTY. Run `tty` in each terminal to verify they differ.
+
+**Agent stopped mid-task?**
+- The anti-stall system should auto-proceed. Check watcher log: `tail -20 /tmp/ghostty-watcher-$(tty | xargs basename).log`
+- If `subagent_idle` persists, verify `anti-stall.sh` and `subagent-proceed.sh` are in the plugin hooks
 
 ## License
 

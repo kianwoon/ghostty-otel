@@ -6,9 +6,9 @@
         "matcher": "*",
         "hooks": [
           {
-            "type": "prompt",
-            "prompt": "Check the transcript at $TRANSCRIPT_PATH for task completeness.\n1. If the input JSON has stop_hook_active=true, output ONLY: {\"ok\":true}\n2. Did the agent execute any real tools (Write, Edit, Bash, Read, etc — not just LLM calls)?\n3. Were there tool failures, errors, or incomplete executions?\n4. Does the stop reason match completed work, or did it stop mid-task?\nIf the agent stopped without executing any tools, or tools failed and it gave up, block to continue.\n\nCRITICAL: Output ONLY raw JSON. No explanation, no markdown, no code fences.\n{\"ok\":true} to approve stopping, or {\"ok\":false,\"systemMessage\":\"reason\"} to block.",
-            "timeout": 30
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/stop-validator.sh",
+            "timeout": 10
           }
         ]
       }
@@ -35,9 +35,14 @@
             "timeout": 5
           },
           {
-            "type": "prompt",
-            "prompt": "Check the transcript at $TRANSCRIPT_PATH for subagent task completeness.\n1. If the input JSON has stop_hook_active=true, output ONLY: {\"ok\":true}\n2. Did the subagent execute any real tools (Write, Edit, Bash, Read, etc)?\n3. Were there tool failures, errors, or incomplete executions?\n4. Did it complete the assigned task, or stop prematurely?\nIf the subagent stopped without doing real work, or failed and gave up, block to continue.\n\nCRITICAL: Output ONLY raw JSON. No explanation, no markdown, no code fences.\n{\"ok\":true} to approve stopping, or {\"ok\":false,\"systemMessage\":\"reason\"} to block.",
-            "timeout": 30
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/anti-stall.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/subagent-stop-validator.sh",
+            "timeout": 10
           }
         ]
       }
@@ -73,6 +78,11 @@
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/prompt-submit.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/state-proceed.sh",
             "timeout": 5
           }
         ]

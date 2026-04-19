@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # TeammateIdle hook: detects stale idle (teammate went idle mid-task)
-# and auto-proceeds via structured JSON decision output.
+# and auto-proceeds via structured JSON output.
 # Input: JSON on stdin with last_assistant_message, agent_id, agent_type
 set -u
 
@@ -12,7 +12,7 @@ SESSION_KEY="$(echo "$SESSION_INFO" | sed -n '2p')"
 
 # Fail-closed: if session-key.sh fails, block to prevent mid-task stop
 if [ -z "$SESSION_KEY" ]; then
-  echo '{"decision":"block","reason":"proceed — session resolution failed, assuming busy"}'
+  echo '{"ok":false,"systemMessage":"proceed — session resolution failed, assuming busy"}'
   exit 0
 fi
 
@@ -26,7 +26,7 @@ fi
 case "$current" in
   calling_llm|tool_running|tool_exec|subagent_idle|looping|waiting_input)
     # Teammate stopped while still busy, or already detected as stale
-    echo '{"decision":"block","reason":"proceed — continue your previous task"}'
+    echo '{"ok":false,"systemMessage":"proceed — continue your previous task"}'
     exit 0
     ;;
 esac

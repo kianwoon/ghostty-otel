@@ -24,7 +24,7 @@ fi
 STATE_DIR="${GHOSTTY_OTEL_STATE_DIR:-/tmp}"
 STATE_FILE="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}"
 PID_FILE="${STATE_DIR}/ghostty-watcher-${SESSION_KEY}.pid"
-LISTENER_PID_FILE="${STATE_DIR}/ghostty-otel-${SESSION_KEY}.pid"
+GLOBAL_LISTENER_PID_FILE="${STATE_DIR}/ghostty-otel.pid"
 WATCHER_LOG="${GHOSTTY_OTEL_WATCHER_LOG:-/tmp/ghostty-watcher-${SESSION_KEY}.log}"
 MAX_LOG_BYTES=300
 
@@ -120,6 +120,8 @@ _iter=0
 
 STATE_TEXT=""
 _file_missing_count=0
+_restart_attempts=0
+MAX_RESTART_ATTEMPTS=3
 while true; do
   _iter=$((_iter + 1))
 
@@ -128,8 +130,8 @@ while true; do
     _file_missing_count=$((_file_missing_count + 1))
     if [ "$_file_missing_count" -ge 10 ]; then
       # Missing for ~5s — check if listener can recreate it
-      if [ -f "$LISTENER_PID_FILE" ]; then
-        _lpid=$(cat "$LISTENER_PID_FILE" 2>/dev/null) || true
+      if [ -f "$GLOBAL_LISTENER_PID_FILE" ]; then
+        _lpid=$(cat "$GLOBAL_LISTENER_PID_FILE" 2>/dev/null) || true
         if [ -n "$_lpid" ] && kill -0 "$_lpid" 2>/dev/null; then
           # Listener alive but no state file — create a default
           echo "idle" > "${STATE_FILE}.txt" 2>/dev/null || true
@@ -137,13 +139,34 @@ while true; do
           continue
         fi
       fi
-      # No listener and no state file — session truly ended
-      break
+      # Listener dead — try to restart (capped attempts)
+      if [ "$_restart_attempts" -ge "$MAX_RESTART_ATTEMPTS" ]; then
+        log_write "[$(date +%H:%M:%S)] max restart attempts reached, exiting"
+        break
+      fi
+      _restart_attempts=$((_restart_attempts + 1))
+      log_write "[$(date +%H:%M:%S)] listener dead, restart attempt $_restart_attempts/$MAX_RESTART_ATTEMPTS"
+      GHOSTTY_OTEL_SESSION_KEY="$SESSION_KEY" \
+      GHOSTTY_OTEL_STATE_DIR="$STATE_DIR" \
+      GHOSTTY_OTEL_TTY="${_otel_tty}" \
+      CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+      bash "${PLUGIN_ROOT}/scripts/start-listener.sh" > /dev/null 2>&1
+      sleep 2
+      if [ -f "$STATE_FILE.txt" ]; then
+        _file_missing_count=0
+        _restart_attempts=0
+        continue
+      fi
+      _file_missing_count=0
+      log_write "[$(date +%H:%M:%S)] waiting for state file to reappear"
+      sleep 5
+      continue
     fi
     sleep 0.5
     continue
   fi
   _file_missing_count=0
+  _restart_attempts=0
 
   NEW_TEXT=$(cat "$STATE_FILE.txt" 2>/dev/null | tr -d '\n')
   # Skip empty reads (race during rename) — keep last known state
