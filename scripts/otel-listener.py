@@ -376,7 +376,8 @@ class OTLPHandler(http.server.BaseHTTPRequestHandler):
                                             write_state(state, attrs, sk)
                                     # else: HoldTimer will flush_idle later
                                 elif state == "waiting_input":
-                                    # waiting_input → ON immediately, reset safety net timer
+                                    # waiting_input always wins — it's the latest lifecycle state.
+                                    # No guard needed: overwriting tool_running is correct behavior.
                                     timer.clear_timers()
                                     timer.mark_completed()
                                     write_state(state, attrs, sk)

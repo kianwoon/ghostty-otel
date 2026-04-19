@@ -22,7 +22,7 @@ else
 fi
 
 STATE_DIR="${GHOSTTY_OTEL_STATE_DIR:-/tmp}"
-STATE_FILE="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}"
+STATE_FILE="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt"
 PID_FILE="${STATE_DIR}/ghostty-watcher-${SESSION_KEY}.pid"
 GLOBAL_LISTENER_PID_FILE="${STATE_DIR}/ghostty-otel.pid"
 WATCHER_LOG="${GHOSTTY_OTEL_WATCHER_LOG:-/tmp/ghostty-watcher-${SESSION_KEY}.log}"
@@ -111,6 +111,8 @@ fi
 
 echo $$ > "$PID_FILE"
 rmdir "$WATCHER_LOCK" 2>/dev/null || true
+# Clean orphan state file without .txt extension
+rm -f "${STATE_FILE%.txt}" 2>/dev/null || true
 log_write "[$(date +%H:%M:%S)] watcher started pid=$$ key=$SESSION_KEY tty=${_otel_tty}"
 
 # --- Main poll loop ---
@@ -125,11 +127,13 @@ _completion_notified=0
 _file_missing_count=0
 _restart_attempts=0
 MAX_RESTART_ATTEMPTS=3
+IDLE_CLEAR_SECONDS=60
+_last_change_epoch=$(date +%s)
 while true; do
   _iter=$((_iter + 1))
 
   # State file gone → session may have ended or listener dead
-  if [ ! -f "$STATE_FILE.txt" ]; then
+  if [ ! -f "$STATE_FILE" ]; then
     _file_missing_count=$((_file_missing_count + 1))
     if [ "$_file_missing_count" -ge 10 ]; then
       # Missing for ~5s — check if listener can recreate it
@@ -137,7 +141,7 @@ while true; do
         _lpid=$(cat "$GLOBAL_LISTENER_PID_FILE" 2>/dev/null) || true
         if [ -n "$_lpid" ] && kill -0 "$_lpid" 2>/dev/null; then
           # Listener alive but no state file — create a default
-          echo "idle" > "${STATE_FILE}.txt" 2>/dev/null || true
+          echo "idle" > "${STATE_FILE}" 2>/dev/null || true
           _file_missing_count=0
           continue
         fi
@@ -155,7 +159,7 @@ while true; do
       CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
       bash "${PLUGIN_ROOT}/scripts/start-listener.sh" > /dev/null 2>&1
       sleep 2
-      if [ -f "$STATE_FILE.txt" ]; then
+      if [ -f "$STATE_FILE" ]; then
         _file_missing_count=0
         _restart_attempts=0
         continue
@@ -171,7 +175,7 @@ while true; do
   _file_missing_count=0
   _restart_attempts=0
 
-  NEW_TEXT=$(cat "$STATE_FILE.txt" 2>/dev/null | tr -d '\n')
+  NEW_TEXT=$(cat "$STATE_FILE" 2>/dev/null | tr -d '\n')
   # Skip empty reads (race during rename) — keep last known state
   if [ -z "$NEW_TEXT" ]; then
     sleep 0.1
@@ -182,6 +186,19 @@ while true; do
   if [ "$NEW_TEXT" != "$STATE_TEXT" ]; then
     STATE_TEXT="$NEW_TEXT"
     _state_changed=1
+    _last_change_epoch=$(date +%s)
+  fi
+
+  # --- Auto-clear: idle for too long → treat as done ---
+  _now=$(date +%s)
+  _idle_secs=$((_now - _last_change_epoch))
+  if [ "$_idle_secs" -ge "$IDLE_CLEAR_SECONDS" ] && [ "$STATE_TEXT" = "idle" ]; then
+    STATE_TEXT="done"
+    _state_changed=1
+    _last_change_epoch=$_now
+    # Persist to state file so next poll reads "done" not "idle"
+    echo "done" > "${STATE_FILE}" 2>/dev/null || true
+    log_write "[$(date +%H:%M:%S)] idle for ${_idle_secs}s → auto-clear to done"
   fi
 
   # Emit on state change OR keep-alive interval
@@ -233,7 +250,7 @@ while true; do
   if [ $(( _iter % COMPLETE_CHECK_ITERS )) -eq 0 ]; then
     case "$STATE_TEXT" in
       waiting_input|idle)
-        _state_mtime=$(stat -f '%m' "$STATE_FILE.txt" 2>/dev/null || stat -c '%Y' "$STATE_FILE.txt" 2>/dev/null || echo "0")
+        _state_mtime=$(stat -f '%m' "$STATE_FILE" 2>/dev/null || stat -c '%Y' "$STATE_FILE" 2>/dev/null || echo "0")
         _now=$(date +%s)
         _idle_secs=$((_now - _state_mtime))
         if [ "$_idle_secs" -ge "$COMPLETE_IDLE_SECONDS" ]; then
