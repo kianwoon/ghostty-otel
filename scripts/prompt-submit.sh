@@ -60,9 +60,20 @@ emit() {
 emit '\033]9;4;3\033\\'
 emit '\033]2;claude: calling_llm\033\\'
 
-# 2. Write state file atomically (tmp+rename to prevent partial reads)
-_tmp="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt.tmp"
-echo "calling_llm" > "$_tmp" 2>/dev/null && mv "$_tmp" "${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt" 2>/dev/null || true
+# 2. Write state file only if currently idle/waiting — don't stomp on busy states
+#    from the listener (tool_running, etc.)
+_current=""
+_sf="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt"
+if [ -f "$_sf" ]; then
+  _current="$(cat "$_sf" 2>/dev/null | cut -d: -f1 | tr -d '[:space:]')"
+fi
+case "$_current" in
+  waiting_input|idle|done|completed|""|subagent_idle)
+    # Only write calling_llm if session is in a non-busy state
+    _tmp="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt.tmp"
+    echo "calling_llm" > "$_tmp" 2>/dev/null && mv "$_tmp" "${_sf}" 2>/dev/null || true
+    ;;
+esac
 
 # 3. Check listener health — restart if dead (<2ms when alive)
 if [ -f "$PID_FILE" ]; then
