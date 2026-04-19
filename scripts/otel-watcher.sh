@@ -66,20 +66,21 @@ emit() {
 }
 
 # --- OSC code from state text ---
+# Ghostty: 0=clear, 2=red pulsing, 3=blue pulsing
 state_to_osc() {
   case "$1" in
-    calling_llm*)    echo 3 ;;
+    calling_llm*)    echo 3 ;;   # working → blue pulsing
     tool_running*)   echo 3 ;;
     tool_exec*)      echo 3 ;;
-    working*)        echo 3 ;;   # legacy prompt-submit state
-    waiting_input)   echo 2 ;;   # needs user attention
-    subagent_idle)   echo 2 ;;
-    looping*)        echo 2 ;;
-    completed)       echo 0 ;;   # session finished all tasks
-    idle)            echo 0 ;;
-    done)            echo 0 ;;   # fallback recovery state
+    working*)        echo 3 ;;
+    waiting_input)   echo 2 ;;   # needs attention → red pulsing
+    subagent_idle)   echo 2 ;;   # stalled → red pulsing
+    looping*)        echo 2 ;;   # loop → red pulsing
+    idle)            echo 2 ;;   # idle without done → red pulsing
+    completed)       echo 0 ;;   # all done → clear
+    done)            echo 0 ;;   # fallback → clear
     failure*)        echo 2 ;;
-    *)               echo 0 ;;
+    *)               echo 2 ;;
   esac
 }
 
@@ -191,7 +192,7 @@ while true; do
     # OSC 2: window title with TTY and state
     _tty_short="$(basename "$_otel_tty")"
     if [ "$OSC" = "0" ]; then
-      emit "\033]2;${_tty_short} claude: idle\033\\"
+      emit "\033]2;${_tty_short} claude: ${STATE_TEXT}\033\\"
     else
       emit "\033]2;${_tty_short} claude: ${STATE_TEXT}\033\\"
     fi
