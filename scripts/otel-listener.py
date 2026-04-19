@@ -134,7 +134,7 @@ class HoldTimer:
             try:
                 with open(state_file, "r") as f:
                     current = f.read().strip().split(":")[0]
-                if current in ("idle", "waiting_input", "done", "subagent_idle"):
+                if current in ("idle", "waiting_input", "done", "completed", "subagent_idle"):
                     # External authority (stop hook) cleared the state —
                     # stop re-arming and cancel the pending flag.
                     with self._lock:
@@ -156,7 +156,7 @@ class HoldTimer:
         try:
             with open(state_file, "r") as f:
                 current = f.read().strip().split(":")[0]
-            if current in ("idle", "waiting_input", "subagent_idle"):
+            if current in ("idle", "waiting_input", "completed", "subagent_idle"):
                 return
         except (OSError, IOError):
             pass

@@ -113,5 +113,11 @@ if [[ "$HAS_ERRORS" -gt 0 ]] && [[ "$INCOMPLETE" -gt 0 ]]; then
     exit 0
 fi
 
-# Otherwise, allow stop
+# Otherwise, allow stop — signal completion to watcher
+STATE_DIR="${GHOSTTY_OTEL_STATE_DIR:-/tmp}"
+SESSION_KEY="${GHOSTTY_OTEL_SESSION_KEY:-}"
+if [[ -n "$SESSION_KEY" ]]; then
+    _state_file="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt"
+    echo "completed" > "$_state_file" 2>/dev/null || true
+fi
 echo '{"ok":true}'

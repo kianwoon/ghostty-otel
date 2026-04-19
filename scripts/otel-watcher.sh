@@ -72,9 +72,10 @@ state_to_osc() {
     tool_running*)   echo 3 ;;
     tool_exec*)      echo 3 ;;
     working*)        echo 3 ;;   # legacy prompt-submit state
-    waiting_input)   echo 2 ;;
+    waiting_input)   echo 2 ;;   # needs user attention
     subagent_idle)   echo 2 ;;
     looping*)        echo 2 ;;
+    completed)       echo 0 ;;   # session finished all tasks
     idle)            echo 0 ;;
     done)            echo 0 ;;   # fallback recovery state
     failure*)        echo 2 ;;
@@ -200,6 +201,14 @@ while true; do
     fi
   fi
 
+  # --- Immediate completion notification on "completed" state ---
+  if [ "$_state_changed" -eq 1 ] && [ "$STATE_TEXT" = "completed" ]; then
+    _tty_short="$(basename "$_otel_tty")"
+    _project="$(basename "$PWD")"
+    osascript -e "display notification \"All tasks completed\" with title \"Claude Code\" subtitle \"${_project} (${_tty_short})\" sound name \"Glass\"" 2>/dev/null || true
+    log_write "[$(date +%H:%M:%S)] completion notified (state=completed)"
+  fi
+
   # --- Listener health check (PID-based, no lsof) ---
   if [ $(( _iter % LISTENER_CHECK_ITERS )) -eq 0 ]; then
     if [ -f "${STATE_DIR}/ghostty-otel.pid" ]; then
@@ -214,11 +223,12 @@ while true; do
     fi
   fi
 
-  # --- Completion notification ---
-  # If state is waiting_input or idle for >90s AND metadata shows "done",
-  # send a macOS notification (session completed its work).
-  COMPLETE_CHECK_ITERS=300  # 300 × 0.1s = 30s
-  COMPLETE_IDLE_SECONDS=90
+  # --- Fallback completion notification ---
+  # If state stays waiting_input/idle for >5min with no user activity,
+  # and metadata shows "done", send a fallback notification.
+  # Primary path is immediate notification on "completed" state above.
+  COMPLETE_CHECK_ITERS=500   # 500 × 0.1s = 50s
+  COMPLETE_IDLE_SECONDS=300  # 5min fallback
   if [ $(( _iter % COMPLETE_CHECK_ITERS )) -eq 0 ]; then
     case "$STATE_TEXT" in
       waiting_input|idle)
@@ -230,9 +240,9 @@ while true; do
           if [ "$_meta" = "done" ] && [ "$_completion_notified" != "1" ]; then
             _tty_short="$(basename "$_otel_tty")"
             _project="$(basename "$PWD")"
-            osascript -e "display notification \"All tasks completed — session idle on ${_tty_short}\" with title \"Claude Code\" subtitle \"${_project} (${_tty_short})\" sound name \"Glass\"" 2>/dev/null || true
+            osascript -e "display notification \"Session idle on ${_tty_short}\" with title \"Claude Code\" subtitle \"${_project} (${_tty_short})\" sound name \"Glass\"" 2>/dev/null || true
             _completion_notified=1
-            log_write "[$(date +%H:%M:%S)] completion notified (idle ${_idle_secs}s)"
+            log_write "[$(date +%H:%M:%S)] fallback completion notified (idle ${_idle_secs}s)"
           fi
         else
           _completion_notified=0
