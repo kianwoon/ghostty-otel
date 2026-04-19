@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "prompt",
-            "prompt": "Check the transcript at $TRANSCRIPT_PATH for task completeness.\n1. If the input JSON has stop_hook_active=true, respond with JSON: {\"decision\":\"approve\"} — never block twice.\n2. Did the agent execute any real tools (Write, Edit, Bash, Read, etc — not just LLM calls)?\n3. Were there tool failures, errors, or incomplete executions?\n4. Does the stop reason match completed work, or did it stop mid-task?\nIf the agent stopped without executing any tools, or tools failed and it gave up, block to continue.\nReturn JSON: {\"decision\":\"approve\"} or {\"decision\":\"block\",\"reason\":\"...\"}",
+            "prompt": "Check the transcript at $TRANSCRIPT_PATH for task completeness.\n1. If the input JSON has stop_hook_active=true, output ONLY: {\"decision\":\"approve\"}\n2. Did the agent execute any real tools (Write, Edit, Bash, Read, etc — not just LLM calls)?\n3. Were there tool failures, errors, or incomplete executions?\n4. Does the stop reason match completed work, or did it stop mid-task?\nIf the agent stopped without executing any tools, or tools failed and it gave up, block to continue.\n\nCRITICAL: Output ONLY raw JSON. No explanation, no markdown, no code fences.\n{\"decision\":\"approve\"} or {\"decision\":\"block\",\"reason\":\"...\"}",
             "timeout": 30
           }
         ]
@@ -36,7 +36,7 @@
           },
           {
             "type": "prompt",
-            "prompt": "Check the transcript at $TRANSCRIPT_PATH for subagent task completeness.\n1. If the input JSON has stop_hook_active=true, respond with JSON: {\"decision\":\"approve\"} — never block twice.\n2. Did the subagent execute any real tools (Write, Edit, Bash, Read, etc)?\n3. Were there tool failures, errors, or incomplete executions?\n4. Did it complete the assigned task, or stop prematurely?\nIf the subagent stopped without doing real work, or failed and gave up, block to continue.\nReturn JSON: {\"decision\":\"approve\"} or {\"decision\":\"block\",\"reason\":\"...\"}",
+            "prompt": "Check the transcript at $TRANSCRIPT_PATH for subagent task completeness.\n1. If the input JSON has stop_hook_active=true, output ONLY: {\"decision\":\"approve\"}\n2. Did the subagent execute any real tools (Write, Edit, Bash, Read, etc)?\n3. Were there tool failures, errors, or incomplete executions?\n4. Did it complete the assigned task, or stop prematurely?\nIf the subagent stopped without doing real work, or failed and gave up, block to continue.\n\nCRITICAL: Output ONLY raw JSON. No explanation, no markdown, no code fences.\n{\"decision\":\"approve\"} or {\"decision\":\"block\",\"reason\":\"...\"}",
             "timeout": 30
           }
         ]
