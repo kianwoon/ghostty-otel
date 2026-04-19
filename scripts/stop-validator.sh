@@ -123,8 +123,15 @@ if [[ -z "$SESSION_KEY" ]]; then
     SESSION_KEY="$(bash "${PLUGIN_ROOT}/scripts/session-key.sh" | sed -n '2p')"
 fi
 
+DEBUG_LOG="/tmp/ghostty-stop-debug.log"
+echo "[$(date '+%H:%M:%S')] stop-validator: SESSION_KEY=$SESSION_KEY PLUGIN_ROOT=${PLUGIN_ROOT:-unset} TRANSCRIPT_PATH=${TRANSCRIPT_PATH:-unset}" >> "$DEBUG_LOG"
+
 if [[ -n "$SESSION_KEY" ]]; then
     _state_file="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt"
-    echo "done" > "$_state_file" 2>/dev/null || true
+    echo "done" > "$_state_file" 2>/dev/null
+    _rc=$?
+    echo "[$(date '+%H:%M:%S')] wrote done to $_state_file (rc=$_rc)" >> "$DEBUG_LOG"
+else
+    echo "[$(date '+%H:%M:%S')] ERROR: no SESSION_KEY derived" >> "$DEBUG_LOG"
 fi
 echo '{"ok":true}'
