@@ -219,8 +219,8 @@ while true; do
     fi
   fi
 
-  # --- Immediate completion notification on "completed" state ---
-  if [ "$_state_changed" -eq 1 ] && [ "$STATE_TEXT" = "completed" ]; then
+  # --- Immediate completion notification on "done"/"completed" state ---
+  if [ "$_state_changed" -eq 1 ] && [ "$STATE_TEXT" = "completed" ] || [ "$STATE_TEXT" = "done" ]; then
     _tty_short="$(basename "$_otel_tty")"
     _project="$(basename "$PWD")"
     osascript -e "display notification \"All tasks completed\" with title \"Claude Code\" subtitle \"${_project} (${_tty_short})\" sound name \"Glass\"" 2>/dev/null || true
