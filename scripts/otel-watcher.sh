@@ -189,16 +189,19 @@ while true; do
     _last_change_epoch=$(date +%s)
   fi
 
-  # --- Auto-clear: idle for too long → treat as done ---
+  # --- Auto-clear: idle/waiting_input for too long → treat as done ---
   _now=$(date +%s)
   _idle_secs=$((_now - _last_change_epoch))
-  if [ "$_idle_secs" -ge "$IDLE_CLEAR_SECONDS" ] && [ "$STATE_TEXT" = "idle" ]; then
-    STATE_TEXT="done"
-    _state_changed=1
-    _last_change_epoch=$_now
-    # Persist to state file so next poll reads "done" not "idle"
-    echo "done" > "${STATE_FILE}" 2>/dev/null || true
-    log_write "[$(date +%H:%M:%S)] idle for ${_idle_secs}s → auto-clear to done"
+  if [ "$_idle_secs" -ge "$IDLE_CLEAR_SECONDS" ]; then
+    case "$STATE_TEXT" in
+      idle|waiting_input)
+        STATE_TEXT="done"
+        _state_changed=1
+        _last_change_epoch=$_now
+        echo "done" > "${STATE_FILE}" 2>/dev/null || true
+        log_write "[$(date +%H:%M:%S)] ${_old_state:-$STATE_TEXT} idle for ${_idle_secs}s → auto-clear to done"
+        ;;
+    esac
   fi
 
   # Emit on state change OR keep-alive interval
