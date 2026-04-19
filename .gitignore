@@ -1,11 +1,23 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
+
+# macOS
 .DS_Store
+
+# Runtime files
 *.log
 *.pid
 *.lock
 *.tmp
+
+# Environment
 .env
 .venv/
 venv/
+
+# Claude Code temp files
+.orphaned_at
+scheduled_tasks.lock
+.claude/scheduled_tasks.json
