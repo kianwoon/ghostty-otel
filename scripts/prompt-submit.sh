@@ -56,14 +56,15 @@ emit() {
   fi
 }
 
-# 1. Emit indicator + title only if currently idle — don't stomp busy states
+# 1. Emit indicator + title only when state is clearly done — not on idle
+#    (idle comes from OTEL interaction spans, not user action)
 _current=""
 _sf="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt"
 if [ -f "$_sf" ]; then
   _current="$(cat "$_sf" 2>/dev/null | cut -d: -f1 | tr -d '[:space:]')"
 fi
 case "$_current" in
-  waiting_input|idle|done|completed|""|subagent_idle)
+  done|completed|"")
     emit '\033]9;4;3\033\\'
     emit '\033]2;claude: calling_llm\033\\'
     _tmp="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt.tmp"
