@@ -116,8 +116,15 @@ fi
 # Otherwise, allow stop — signal completion to watcher
 STATE_DIR="${GHOSTTY_OTEL_STATE_DIR:-/tmp}"
 SESSION_KEY="${GHOSTTY_OTEL_SESSION_KEY:-}"
+
+# Derive session key if not provided (Stop hooks don't have it in env)
+if [[ -z "$SESSION_KEY" ]]; then
+    PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+    SESSION_KEY="$(bash "${PLUGIN_ROOT}/scripts/session-key.sh" | sed -n '2p')"
+fi
+
 if [[ -n "$SESSION_KEY" ]]; then
     _state_file="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt"
-    echo "completed" > "$_state_file" 2>/dev/null || true
+    echo "done" > "$_state_file" 2>/dev/null || true
 fi
 echo '{"ok":true}'

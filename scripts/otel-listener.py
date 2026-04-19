@@ -164,7 +164,7 @@ class HoldTimer:
         if has_been_busy and not last_completed:
             write_state("subagent_idle", {}, key)
         else:
-            write_state("done", {}, key)
+            write_state("idle", {}, key)
 
     def clear_timers(self):
         with self._lock:
@@ -372,14 +372,14 @@ class OTLPHandler(http.server.BaseHTTPRequestHandler):
                                             # Busy→idle without done: subagent stalled
                                             write_state("subagent_idle", attrs, sk)
                                         else:
-                                            # Clean idle → write "done" as terminal state
-                                            write_state("done", attrs, sk)
+                                            # Clean idle (task completed normally)
+                                            write_state(state, attrs, sk)
                                     # else: HoldTimer will flush_idle later
                                 elif state == "waiting_input":
-                                    # End of turn — write "done" as the terminal state.
+                                    # waiting_input — let the Stop hook write "done"
                                     timer.clear_timers()
                                     timer.mark_completed()
-                                    write_state("done", attrs, sk)
+                                    write_state(state, attrs, sk)
                                 elif state == "calling_llm":
                                     # OTEL llm_request spans arrive AFTER completion.
                                     # Writing calling_llm shows stale state - don't do it.
