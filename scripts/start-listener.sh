@@ -9,6 +9,21 @@ PORT="${GHOSTTY_OTEL_PORT:-4318}"
 STATE_DIR="${GHOSTTY_OTEL_STATE_DIR:-/tmp}"
 LOG_FILE="${GHOSTTY_OTEL_LOG:-/tmp/ghostty-otel.log}"
 
+# --- Inject OTEL env vars into session (required for fresh installs) ---
+# Plugin .claude/settings.json env block is NOT applied automatically.
+# $CLAUDE_ENV_FILE is the supported mechanism for env injection.
+if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
+  cat >> "$CLAUDE_ENV_FILE" <<'ENVEOF'
+CLAUDE_CODE_ENABLE_TELEMETRY=1
+CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+OTEL_TRACES_EXPORTER=otlp
+OTEL_LOGS_EXPORTER=otlp
+OTEL_SERVICE_NAME=claude-code
+ENVEOF
+fi
+
 # --- Session key + TTY path derivation (single source of truth) ---
 # Prefer env vars (passed by watcher auto-recovery) over session-key.sh
 if [ -n "${GHOSTTY_OTEL_SESSION_KEY:-}" ] && [ -n "${GHOSTTY_OTEL_TTY:-}" ]; then

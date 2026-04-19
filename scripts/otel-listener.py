@@ -97,7 +97,7 @@ class HoldTimer:
                 self._safety_timer.start()
             else:
                 if not self._has_been_busy:
-                    return True  # Swallow premature idle
+                    return True, self._has_been_busy, self._last_completed
                 if time.monotonic() < self._busy_until:
                     delay = self._busy_until - time.monotonic()
                     if self._defer_timer:
@@ -105,12 +105,12 @@ class HoldTimer:
                     self._defer_timer = threading.Timer(delay, self._flush_idle)
                     self._defer_timer.daemon = True
                     self._defer_timer.start()
-                    return True  # Deferred
+                    return True, self._has_been_busy, self._last_completed
                 # Hold period expired — cancel safety timer, caller writes idle
                 if self._safety_timer:
                     self._safety_timer.cancel()
                     self._safety_timer = None
-        return False
+        return False, self._has_been_busy, self._last_completed
 
     def _flush_idle(self):
         with self._lock:
@@ -174,6 +174,10 @@ class HoldTimer:
             if self._safety_timer:
                 self._safety_timer.cancel()
                 self._safety_timer = None
+
+    def mark_completed(self):
+        with self._lock:
+            self._last_completed = True
 
 
 # Per-session hold timers: session_id → HoldTimer
@@ -361,11 +365,10 @@ class OTLPHandler(http.server.BaseHTTPRequestHandler):
                                         pass
                                     # Idle: defer through HoldTimer to prevent
                                     # premature idle between LLM responses
-                                    deferred = timer.update(False, sk)
+                                    deferred, has_been_busy, last_completed = timer.update(False, sk)
                                     if not deferred:
                                         # Hold expired — detect stale idle vs clean idle
-                                        if (timer._has_been_busy
-                                                and not timer._last_completed):
+                                        if has_been_busy and not last_completed:
                                             # Busy→idle without done: subagent stalled
                                             write_state("subagent_idle", attrs, sk)
                                         else:
@@ -375,7 +378,7 @@ class OTLPHandler(http.server.BaseHTTPRequestHandler):
                                 elif state == "waiting_input":
                                     # waiting_input → ON immediately, reset safety net timer
                                     timer.clear_timers()
-                                    timer._last_completed = True
+                                    timer.mark_completed()
                                     write_state(state, attrs, sk)
                                 elif state == "calling_llm":
                                     # OTEL llm_request spans arrive AFTER completion.

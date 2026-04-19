@@ -14,6 +14,36 @@ SESSION_KEY="$(echo "$_SESSION_INFO" | sed -n '2p')"
 
 PID_FILE="${STATE_DIR}/ghostty-otel-${SESSION_KEY}.pid"
 
+# --- Create SID mapping file (session.id → session_key) ---
+# The OTEL listener needs this mapping to route spans to the correct session.
+# Claude Code sends JSON on stdin with session_id and transcript_path.
+# Primary: parse session_id from stdin JSON.
+# Fallback 1: derive from transcript_path in stdin JSON.
+# Fallback 2: read from transcript-path file (external ghostty-state.sh).
+_stdin_json="$(cat 2>/dev/null)" || true
+_session_id=""
+if [ -n "$_stdin_json" ]; then
+  _session_id="$(echo "$_stdin_json" | grep -o '"session_id":"[^"]*"' | head -1 | cut -d'"' -f4)" || true
+fi
+if [ -z "$_session_id" ]; then
+  _tp="$(echo "$_stdin_json" | grep -o '"transcript_path":"[^"]*"' | head -1 | cut -d'"' -f4)" || true
+  if [ -n "$_tp" ]; then
+    _session_id="$(basename "$_tp" .jsonl 2>/dev/null)" || true
+  fi
+fi
+if [ -z "$_session_id" ]; then
+  TRANSCRIPT_PATH_FILE="${STATE_DIR}/ghostty-transcript-path-${SESSION_KEY}"
+  if [ -f "$TRANSCRIPT_PATH_FILE" ]; then
+    _transcript_path="$(cat "$TRANSCRIPT_PATH_FILE" 2>/dev/null)" || true
+    if [ -n "$_transcript_path" ]; then
+      _session_id="$(basename "$_transcript_path" .jsonl 2>/dev/null)" || true
+    fi
+  fi
+fi
+if [ -n "$_session_id" ]; then
+  echo "$_session_id" > "${STATE_DIR}/ghostty-sid-${SESSION_KEY}" 2>/dev/null || true
+fi
+
 # --- OSC 9;4 emit (tmux-aware) ---
 # Uses /dev/tty directly since hook has controlling terminal
 emit() {
@@ -30,8 +60,9 @@ emit() {
 emit '\033]9;4;3\033\\'
 emit '\033]2;claude: calling_llm\033\\'
 
-# 2. Write state file (watchers/hooks can read this)
-echo "calling_llm" > "${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt" 2>/dev/null || true
+# 2. Write state file atomically (tmp+rename to prevent partial reads)
+_tmp="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt.tmp"
+echo "calling_llm" > "$_tmp" 2>/dev/null && mv "$_tmp" "${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt" 2>/dev/null || true
 
 # 3. Check listener health — restart if dead (<2ms when alive)
 if [ -f "$PID_FILE" ]; then

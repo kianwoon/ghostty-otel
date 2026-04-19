@@ -28,4 +28,8 @@ STATE_FILE="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}"
 rm -f "${STATE_FILE}" "${STATE_FILE}.txt" "${STATE_FILE}.txt.tmp" 2>/dev/null || true
 rm -f "${STATE_DIR}/ghostty-watcher-${SESSION_KEY}.lock" 2>/dev/null || true
 
+# Remove SID mapping and transcript path files
+rm -f "${STATE_DIR}/ghostty-sid-${SESSION_KEY}" 2>/dev/null || true
+rm -f "${STATE_DIR}/ghostty-transcript-path-${SESSION_KEY}" 2>/dev/null || true
+
 exit 0
