@@ -119,6 +119,7 @@ LISTENER_CHECK_ITERS=50  # 50 × 0.1s = 5s
 _iter=0
 
 STATE_TEXT=""
+_completion_notified=0
 _file_missing_count=0
 _restart_attempts=0
 MAX_RESTART_ATTEMPTS=3
@@ -211,6 +212,36 @@ while true; do
         bash "${PLUGIN_ROOT}/scripts/start-listener.sh" > /dev/null 2>&1 &
       fi
     fi
+  fi
+
+  # --- Completion notification ---
+  # If state is waiting_input or idle for >90s AND metadata shows "done",
+  # send a macOS notification (session completed its work).
+  COMPLETE_CHECK_ITERS=300  # 300 × 0.1s = 30s
+  COMPLETE_IDLE_SECONDS=90
+  if [ $(( _iter % COMPLETE_CHECK_ITERS )) -eq 0 ]; then
+    case "$STATE_TEXT" in
+      waiting_input|idle)
+        _state_mtime=$(stat -f '%m' "$STATE_FILE.txt" 2>/dev/null || stat -c '%Y' "$STATE_FILE.txt" 2>/dev/null || echo "0")
+        _now=$(date +%s)
+        _idle_secs=$((_now - _state_mtime))
+        if [ "$_idle_secs" -ge "$COMPLETE_IDLE_SECONDS" ]; then
+          _meta="$(cat "$STATE_FILE" 2>/dev/null | tr -d '\n')" || true
+          if [ "$_meta" = "done" ] && [ "$_completion_notified" != "1" ]; then
+            _tty_short="$(basename "$_otel_tty")"
+            _project="$(basename "$PWD")"
+            osascript -e "display notification \"All tasks completed — session idle on ${_tty_short}\" with title \"Claude Code\" subtitle \"${_project} (${_tty_short})\" sound name \"Glass\"" 2>/dev/null || true
+            _completion_notified=1
+            log_write "[$(date +%H:%M:%S)] completion notified (idle ${_idle_secs}s)"
+          fi
+        else
+          _completion_notified=0
+        fi
+        ;;
+      *)
+        _completion_notified=0
+        ;;
+    esac
   fi
 
   sleep 0.1
