@@ -8,20 +8,37 @@ set -euo pipefail
 # Read hook input (JSON)
 INPUT="$(cat)"
 
-# Check for stop_hook_active guard
-if echo "$INPUT" | command jq -e '.stop_hook_active == true' >/dev/null 2>&1; then
+# Derive session key EARLY (needed for all exit paths)
+STATE_DIR="${GHOSTTY_OTEL_STATE_DIR:-/tmp}"
+SESSION_KEY="${GHOSTTY_OTEL_SESSION_KEY:-}"
+if [[ -z "$SESSION_KEY" ]]; then
+    TTY_PATH=$(readlink /dev/tty 2>/dev/null) || TTY_PATH=$(stat -f "%Y" /dev/tty 2>/dev/null) || TTY_PATH=""
+    if [[ -n "$TTY_PATH" ]]; then
+        SESSION_KEY=$(basename "$TTY_PATH" | tr '/' '_' | tr -cd 'a-zA-Z0-9_-')
+    fi
+fi
+
+# Helper: write done and exit
+allow_stop() {
+    if [[ -n "$SESSION_KEY" ]]; then
+        _state_file="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt"
+        echo "done" > "$_state_file" 2>/dev/null || true
+    fi
     echo '{"ok":true}'
     exit 0
+}
+
+# Check for stop_hook_active guard
+if echo "$INPUT" | command jq -e '.stop_hook_active == true' >/dev/null 2>&1; then
+    allow_stop
 fi
 
 # Check if Ralph Loop is active — skip blocking to avoid conflicts
-# Ralph has its own Stop hook that manages iteration boundaries
 RALPH_STATE_FILE=".claude/ralph-loop.local.md"
 if [[ -f "$RALPH_STATE_FILE" ]]; then
-    _ralph_active=$(grep '^active:' "$RALPH_STATE_FILE" | sed 's/active: *//' | tr -d ' ')
+    _ralph_active=$(grep '^active:' "$RALPH_STATE_FILE" 2>/dev/null | sed 's/active: *//' | tr -d ' ') || true
     if [[ "$_ralph_active" == "true" ]]; then
-        echo '{"ok":true}'
-        exit 0
+        allow_stop
     fi
 fi
 
@@ -29,8 +46,7 @@ TRANSCRIPT_PATH="${TRANSCRIPT_PATH:-}"
 
 # Exit with allow if no transcript (safer default)
 if [[ -z "$TRANSCRIPT_PATH" ]] || [[ ! -f "$TRANSCRIPT_PATH" ]]; then
-    echo '{"ok":true}'
-    exit 0
+    allow_stop
 fi
 
 # Check transcript for real tool usage (Write, Edit, Bash, Read, etc)
@@ -143,27 +159,4 @@ if [[ "$HAS_ERRORS" -gt 0 ]] && [[ "$INCOMPLETE" -gt 0 ]]; then
 fi
 
 # Otherwise, allow stop — signal completion to watcher
-STATE_DIR="${GHOSTTY_OTEL_STATE_DIR:-/tmp}"
-SESSION_KEY="${GHOSTTY_OTEL_SESSION_KEY:-}"
-
-# Derive session key if not provided (Stop hooks don't have it in env)
-if [[ -z "$SESSION_KEY" ]]; then
-    # Fast path: read TTY from /dev/tty symlink (same as prompt-submit.sh)
-    TTY_PATH=$(readlink /dev/tty 2>/dev/null) || TTY_PATH=$(stat -f "%Y" /dev/tty 2>/dev/null) || TTY_PATH=""
-    if [[ -n "$TTY_PATH" ]]; then
-        SESSION_KEY=$(basename "$TTY_PATH" | tr '/' '_' | tr -cd 'a-zA-Z0-9_-')
-    fi
-fi
-
-DEBUG_LOG="/tmp/ghostty-stop-debug.log"
-echo "[$(date '+%H:%M:%S')] stop-validator: SESSION_KEY=$SESSION_KEY PLUGIN_ROOT=${PLUGIN_ROOT:-unset} TRANSCRIPT_PATH=${TRANSCRIPT_PATH:-unset}" >> "$DEBUG_LOG"
-
-if [[ -n "$SESSION_KEY" ]]; then
-    _state_file="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt"
-    echo "done" > "$_state_file" 2>/dev/null
-    _rc=$?
-    echo "[$(date '+%H:%M:%S')] wrote done to $_state_file (rc=$_rc)" >> "$DEBUG_LOG"
-else
-    echo "[$(date '+%H:%M:%S')] ERROR: no SESSION_KEY derived" >> "$DEBUG_LOG"
-fi
-echo '{"ok":true}'
+allow_stop
