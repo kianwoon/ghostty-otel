@@ -9,6 +9,28 @@ PORT="${GHOSTTY_OTEL_PORT:-4318}"
 STATE_DIR="${GHOSTTY_OTEL_STATE_DIR:-/tmp}"
 LOG_FILE="${GHOSTTY_OTEL_LOG:-/tmp/ghostty-otel.log}"
 
+# --- Cache sync: marketplace source → plugin cache (prevents staleness) ---
+# Runs on SessionStart to ensure cache reflects latest marketplace source.
+# Cache dir is ~/.claude/plugins/cache/kianwoon/ghostty-otel/VERSION/
+sync_cache() {
+  local CACHE_VER
+  local MARKET_VER
+  local CACHE_DIR
+
+  # Only sync if running from cache (detect by path structure)
+  case "$PLUGIN_ROOT" in
+    */.claude/plugins/cache/*)
+      CACHE_VER=$(python3 -c "import json; print(json.load(open('$PLUGIN_ROOT/.claude-plugin/plugin.json'))['version'])" 2>/dev/null) || return 0
+      MARKET_VER=$(python3 -c "import json; print(json.load(open('$HOME/claude-marketplaces/kianwoon/ghostty-otel/.claude-plugin/plugin.json'))['version'])" 2>/dev/null) || return 0
+      if [ "$CACHE_VER" != "$MARKET_VER" ]; then
+        CACHE_DIR="$(dirname "$PLUGIN_ROOT")"
+        rsync -a --delete "$HOME/claude-marketplaces/kianwoon/ghostty-otel/" "$CACHE_DIR/" 2>/dev/null || true
+      fi
+      ;;
+  esac
+}
+sync_cache
+
 # --- Inject OTEL env vars into session (required for fresh installs) ---
 # Plugin .claude/settings.json env block is NOT applied automatically.
 # $CLAUDE_ENV_FILE is the supported mechanism for env injection.
