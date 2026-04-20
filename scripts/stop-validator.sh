@@ -80,33 +80,51 @@ else
 fi
 
 # --- Task completion check ---
-# Look for task list patterns: "N tasks (X done, Y open)" or similar
-# If incomplete tasks exist, block stop
+# Look for task list patterns and block stop if incomplete tasks exist
 if command -v jq >/dev/null 2>&1; then
-    # Extract last task summary from transcript
+    # Pattern 1: "N tasks (X done, Y in_progress|active, Z open)" — capture in_progress count
     LAST_TASK_SUMMARY=$(jq -r '
         select(.content != null) |
         .content |
-        capture("\\d+\\s+tasks?\\s*\\((\\d+)\\s+done,?\\s*(\\d+)\\s+open\\)"; "g") |
-        "\(.done)/\(.open)"
+        capture("\\d+\\s+tasks?\\s*\\((\\d+)\\s+done,?\\s*(\\d+)\\s+(?:in\\s+progress|active|in_progress|pending),?\\s*(\\d+)\\s+open\\)"; "g") |
+        "\(.done)/\(.remaining)/\(.open)"
     ' "$TRANSCRIPT_PATH" 2>/dev/null | tail -1 || echo "")
 
-    # Also check for TodoWrite patterns with pending tasks
-    PENDING_TASKS=$(jq -r '
+    # Pattern 2: "X/Y tasks complete|done" — fraction format
+    FRACTION_SUMMARY=$(jq -r '
+        select(.content != null) |
+        .content |
+        capture("(\\d+)/(\\d+)\\s+tasks?\\s+(?:complete|done|finished)"; "g") |
+        "\(.done)/\(.total)"
+    ' "$TRANSCRIPT_PATH" 2>/dev/null | tail -1 || echo "")
+
+    # Check TaskCreate/TaskUpdate for pending or in_progress tasks
+    INCOMPLETE_TASKS=$(jq -r '
         select(.tool == "TaskCreate" or .tool == "TaskUpdate") |
         .input // .content // ""
-    ' "$TRANSCRIPT_PATH" 2>/dev/null | grep -c '"status":"pending"' 2>/dev/null || echo "0")
+    ' "$TRANSCRIPT_PATH" 2>/dev/null | grep -cE '"status":"(pending|in_progress)"' 2>/dev/null || echo "0")
 
     if [[ -n "$LAST_TASK_SUMMARY" ]]; then
-        OPEN_TASKS=$(echo "$LAST_TASK_SUMMARY" | cut -d'/' -f2 | tr -d ' ')
-        if [[ "$OPEN_TASKS" -gt 0 ]] 2>/dev/null; then
-            echo "{\"ok\":false,\"systemMessage\":\"${OPEN_TASKS} tasks still open — continue working on pending tasks\"}"
+        REMAINING=$(echo "$LAST_TASK_SUMMARY" | cut -d'/' -f2 | tr -d ' ')
+        OPEN_TASKS=$(echo "$LAST_TASK_SUMMARY" | cut -d'/' -f3 | tr -d ' ')
+        TOTAL_INCOMPLETE=$((REMAINING + OPEN_TASKS))
+        if [[ "$TOTAL_INCOMPLETE" -gt 0 ]] 2>/dev/null; then
+            echo "{\"ok\":false,\"systemMessage\":\"${TOTAL_INCOMPLETE} tasks still incomplete (in progress or open) — continue working\"}"
             exit 0
         fi
     fi
 
-    if [[ "$PENDING_TASKS" -gt 0 ]] 2>/dev/null; then
-        echo "{\"ok\":false,\"systemMessage\":\"${PENDING_TASKS} pending tasks detected — continue working\"}"
+    if [[ -n "$FRACTION_SUMMARY" ]]; then
+        DONE=$(echo "$FRACTION_SUMMARY" | cut -d'/' -f1 | tr -d ' ')
+        TOTAL=$(echo "$FRACTION_SUMMARY" | cut -d'/' -f2 | tr -d ' ')
+        if [[ "$DONE" -lt "$TOTAL" ]] 2>/dev/null; then
+            echo "{\"ok\":false,\"systemMessage\":\"${DONE}/${TOTAL} tasks done — continue working on remaining tasks\"}"
+            exit 0
+        fi
+    fi
+
+    if [[ "$INCOMPLETE_TASKS" -gt 0 ]] 2>/dev/null; then
+        echo "{\"ok\":false,\"systemMessage\":\"${INCOMPLETE_TASKS} incomplete tasks detected (pending or in_progress) — continue working\"}"
         exit 0
     fi
 fi
