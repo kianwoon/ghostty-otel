@@ -241,6 +241,15 @@ def write_state(state: str, meta: dict, session_key: str):
     """Write state to per-session file."""
     if not session_key:
         return
+    # Guard: don't overwrite "done" state set by Stop hook
+    txt_path = f"{STATE_DIR}/ghostty-indicator-state-{session_key}.txt"
+    try:
+        with open(txt_path, "r") as f:
+            current = f.read().strip().split(":")[0]
+        if current in ("done", "completed"):
+            return
+    except (OSError, IOError):
+        pass
     # Build rich state text
     rich = state
     if meta:
@@ -251,7 +260,6 @@ def write_state(state: str, meta: dict, session_key: str):
         if parts:
             rich = f"{state}:{':'.join(parts)}"
 
-    txt_path = f"{STATE_DIR}/ghostty-indicator-state-{session_key}.txt"
     tmp_path = txt_path + ".tmp"
     try:
         with open(tmp_path, "w") as f:

@@ -57,9 +57,15 @@ emit() {
 }
 
 # 1. Emit indicator ON immediately (gap coverage before first OTEL span)
-#    Do NOT write state file — the listener owns it exclusively.
+#    Also write calling_llm to state file so the watcher sustains it.
+#    The listener intentionally never writes calling_llm (OTEL spans arrive
+#    after LLM completion), so prompt-submit owns this state. The listener
+#    will overwrite it with tool_running/idle when the next real span arrives.
 emit '\033]9;4;3\033\\'
 emit '\033]2;claude: calling_llm\033\\'
+STATE_FILE="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt"
+_tmpf="${STATE_FILE}.tmp.$$"
+printf 'calling_llm' > "$_tmpf" && mv "$_tmpf" "$STATE_FILE" 2>/dev/null || true
 
 # 3. Check listener health — restart if dead (<2ms when alive)
 if [ -f "$PID_FILE" ]; then

@@ -67,20 +67,19 @@ emit() {
 
 # --- OSC code from state text ---
 # Ghostty: 0=clear, 2=red pulsing, 3=blue pulsing
+# Only 4 display states: busy(3), waiting_input(2), idle(0), done(0)
 state_to_osc() {
   case "$1" in
-    calling_llm*)    echo 3 ;;   # working → blue pulsing
-    tool_running*)   echo 3 ;;
-    tool_exec*)      echo 3 ;;
-    working*)        echo 3 ;;
-    waiting_input)   echo 2 ;;   # needs attention → red pulsing
-    subagent_idle)   echo 2 ;;   # stalled → red pulsing
-    looping*)        echo 2 ;;   # loop → red pulsing
-    idle)            echo 2 ;;   # idle without done → red pulsing
-    completed)       echo 0 ;;   # all done → clear
-    done)            echo 0 ;;   # fallback → clear
-    failure*)        echo 2 ;;
-    *)               echo 2 ;;
+    calling_llm*|tool_running*|tool_exec*|working*|subagent_idle*|looping*|failure*)
+      echo 3 ;;   # busy → blue pulsing
+    waiting_input)
+      echo 2 ;;   # needs attention → red pulsing
+    idle)
+      echo 0 ;;   # idle → clear
+    completed|done)
+      echo 0 ;;   # done → clear
+    *)
+      echo 0 ;;   # unknown → clear
   esac
 }
 
@@ -128,7 +127,9 @@ _file_missing_count=0
 _restart_attempts=0
 MAX_RESTART_ATTEMPTS=3
 IDLE_CLEAR_SECONDS=60
+STALE_BUSY_SECONDS=30
 _last_change_epoch=$(date +%s)
+_mtime_epoch=$(date +%s)
 while true; do
   _iter=$((_iter + 1))
 
@@ -187,7 +188,24 @@ while true; do
     STATE_TEXT="$NEW_TEXT"
     _state_changed=1
     _last_change_epoch=$(date +%s)
+    _mtime_epoch=$(date +%s)
   fi
+
+  # --- Stale busy state detection ---
+  # If state file mtime hasn't changed for STALE_BUSY_SECONDS while in a busy
+  # state, the OTEL listener likely isn't receiving spans. Reset to idle.
+  _now=$(date +%s)
+  _mtime_now=$(stat -f "%m" "$STATE_FILE" 2>/dev/null || echo "$_mtime_epoch")
+  _stale_dt=$((_now - _mtime_now))
+  case "$STATE_TEXT" in
+    calling_llm*|tool_running*|tool_exec*|working*|subagent_idle*|looping*)
+      if [ "$_stale_dt" -ge "$STALE_BUSY_SECONDS" ]; then
+        _tmpf="${STATE_FILE}.tmp.$$"
+        printf 'idle' > "$_tmpf" && mv "$_tmpf" "$STATE_FILE" 2>/dev/null || true
+        log_write "[$(date +%H:%M:%S)] stale busy (${STATE_TEXT%%:*}) after ${_stale_dt}s → idle"
+      fi
+      ;;
+  esac
 
   # Emit on state change OR keep-alive interval
   if [ "$_state_changed" -eq 1 ] || [ $(( _iter % KEEPALIVE_ITERS )) -eq 0 ]; then
@@ -207,12 +225,21 @@ while true; do
     fi
   fi
 
-  # --- Immediate completion notification on "done"/"completed" state ---
-  if [ "$_state_changed" -eq 1 ] && [ "$STATE_TEXT" = "completed" ] || [ "$STATE_TEXT" = "done" ]; then
+  # --- Completion notification (main agent only) ---
+  # Only notify when state changes to "done" — not subagent transitions.
+  # Subagent stops produce: subagent_idle, looping, etc. → skip those.
+  if [ "$_state_changed" -eq 1 ] && [ "$STATE_TEXT" = "done" ] && [ "$_completion_notified" -ne 1 ]; then
+    _completion_notified=1
     _tty_short="$(basename "$_otel_tty")"
     _project="$(basename "$PWD")"
     osascript -e "display notification \"All tasks completed\" with title \"Claude Code\" subtitle \"${_project} (${_tty_short})\" sound name \"Glass\"" 2>/dev/null || true
-    log_write "[$(date +%H:%M:%S)] completion notified (state=completed)"
+    log_write "[$(date +%H:%M:%S)] completion notified"
+  fi
+  # Reset notification flag when new work starts
+  if [ "$_state_changed" -eq 1 ]; then
+    case "$STATE_TEXT" in
+      calling_llm*|tool_running*|tool_exec*|working*) _completion_notified=0 ;;
+    esac
   fi
 
   # --- Listener health check (PID-based, no lsof) ---
@@ -227,37 +254,6 @@ while true; do
         bash "${PLUGIN_ROOT}/scripts/start-listener.sh" > /dev/null 2>&1 &
       fi
     fi
-  fi
-
-  # --- Fallback completion notification ---
-  # If state stays waiting_input/idle for >5min with no user activity,
-  # and metadata shows "done", send a fallback notification.
-  # Primary path is immediate notification on "completed" state above.
-  COMPLETE_CHECK_ITERS=500   # 500 × 0.1s = 50s
-  COMPLETE_IDLE_SECONDS=300  # 5min fallback
-  if [ $(( _iter % COMPLETE_CHECK_ITERS )) -eq 0 ]; then
-    case "$STATE_TEXT" in
-      waiting_input|idle)
-        _state_mtime=$(stat -f '%m' "$STATE_FILE" 2>/dev/null || stat -c '%Y' "$STATE_FILE" 2>/dev/null || echo "0")
-        _now=$(date +%s)
-        _idle_secs=$((_now - _state_mtime))
-        if [ "$_idle_secs" -ge "$COMPLETE_IDLE_SECONDS" ]; then
-          _meta="$(cat "$STATE_FILE" 2>/dev/null | tr -d '\n')" || true
-          if [ "$_meta" = "done" ] && [ "$_completion_notified" != "1" ]; then
-            _tty_short="$(basename "$_otel_tty")"
-            _project="$(basename "$PWD")"
-            osascript -e "display notification \"Session idle on ${_tty_short}\" with title \"Claude Code\" subtitle \"${_project} (${_tty_short})\" sound name \"Glass\"" 2>/dev/null || true
-            _completion_notified=1
-            log_write "[$(date +%H:%M:%S)] fallback completion notified (idle ${_idle_secs}s)"
-          fi
-        else
-          _completion_notified=0
-        fi
-        ;;
-      *)
-        _completion_notified=0
-        ;;
-    esac
   fi
 
   sleep 0.1
