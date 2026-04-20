@@ -150,7 +150,9 @@ function setGhosttyState(state) {
     if (!sid) return;
     var stateDir = process.env.GHOSTTY_OTEL_STATE_DIR || '/tmp';
     var stateFile = path.join(stateDir, 'ghostty-indicator-state-' + sid + '.txt');
-    fs.writeFileSync(stateFile, state + '\n');
+    var tmpFile = stateFile + '.tmp.' + process.pid;
+    fs.writeFileSync(tmpFile, state + '\n');
+    fs.renameSync(tmpFile, stateFile);
   } catch (_) { /* best-effort */ }
 }
 

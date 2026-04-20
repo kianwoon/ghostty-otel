@@ -127,9 +127,8 @@ _file_missing_count=0
 _restart_attempts=0
 MAX_RESTART_ATTEMPTS=3
 IDLE_CLEAR_SECONDS=60
-STALE_BUSY_SECONDS=30
+STALE_BUSY_SECONDS=70
 _last_change_epoch=$(date +%s)
-_mtime_epoch=$(date +%s)
 while true; do
   _iter=$((_iter + 1))
 
@@ -188,20 +187,20 @@ while true; do
     STATE_TEXT="$NEW_TEXT"
     _state_changed=1
     _last_change_epoch=$(date +%s)
-    _mtime_epoch=$(date +%s)
   fi
 
   # --- Stale busy state detection ---
-  # If state file mtime hasn't changed for STALE_BUSY_SECONDS while in a busy
-  # state, the OTEL listener likely isn't receiving spans. Reset to idle.
+  # If state hasn't changed for STALE_BUSY_SECONDS while in a busy state,
+  # the OTEL listener likely isn't receiving spans. Reset to idle.
+  # Uses _last_change_epoch (cross-platform) instead of stat -f (macOS-only).
   _now=$(date +%s)
-  _mtime_now=$(stat -f "%m" "$STATE_FILE" 2>/dev/null || echo "$_mtime_epoch")
-  _stale_dt=$((_now - _mtime_now))
+  _stale_dt=$((_now - _last_change_epoch))
   case "$STATE_TEXT" in
     calling_llm*|tool_running*|tool_exec*|working*|subagent_idle*|looping*)
       if [ "$_stale_dt" -ge "$STALE_BUSY_SECONDS" ]; then
         _tmpf="${STATE_FILE}.tmp.$$"
         printf 'idle' > "$_tmpf" && mv "$_tmpf" "$STATE_FILE" 2>/dev/null || true
+        _last_change_epoch=$_now
         log_write "[$(date +%H:%M:%S)] stale busy (${STATE_TEXT%%:*}) after ${_stale_dt}s → idle"
       fi
       ;;
