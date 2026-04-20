@@ -83,33 +83,27 @@ state_to_osc() {
   esac
 }
 
-# --- Prevent duplicate watchers (atomic lock) ---
-WATCHER_LOCK="${STATE_DIR}/ghostty-watcher-${SESSION_KEY}.lock"
+# --- Prevent duplicate watchers (PID file as lock) ---
+# Use PID file as both lock and alive check — no separate lock dir needed.
+# ln is atomic: if it succeeds, we own the slot. If it fails, someone else does.
+_lock_file="${STATE_DIR}/ghostty-watcher-${SESSION_KEY}.lock"
+echo $$ > "${PID_FILE}.tmp.$$"
 
-if [ -f "$PID_FILE" ]; then
+if ! ln "${PID_FILE}.tmp.$$" "$PID_FILE" 2>/dev/null; then
+  # PID file exists — check if holder is alive
   _old=$(cat "$PID_FILE" 2>/dev/null) || true
   if [ -n "$_old" ] && kill -0 "$_old" 2>/dev/null; then
-    exit 0
+    rm -f "${PID_FILE}.tmp.$$"
+    exit 0  # Existing watcher is alive
   fi
+  # Holder is dead — steal the slot
   rm -f "$PID_FILE"
-fi
-
-# Acquire lock before writing PID
-if ! mkdir "$WATCHER_LOCK" 2>/dev/null; then
-  # Another instance is starting — wait briefly and check
-  sleep 0.2
-  if [ -f "$PID_FILE" ]; then
-    _old2=$(cat "$PID_FILE" 2>/dev/null) || true
-    if [ -n "$_old2" ] && kill -0 "$_old2" 2>/dev/null; then
-      rmdir "$WATCHER_LOCK" 2>/dev/null || true
-      exit 0
-    fi
+  if ! ln "${PID_FILE}.tmp.$$" "$PID_FILE" 2>/dev/null; then
+    rm -f "${PID_FILE}.tmp.$$"
+    exit 0  # Lost the race — another process won
   fi
-  # Lock holder seems stuck — force through
 fi
-
-echo $$ > "$PID_FILE"
-rmdir "$WATCHER_LOCK" 2>/dev/null || true
+rm -f "${PID_FILE}.tmp.$$"
 # Clean orphan state file without .txt extension
 rm -f "${STATE_FILE%.txt}" 2>/dev/null || true
 log_write "[$(date +%H:%M:%S)] watcher started pid=$$ key=$SESSION_KEY tty=${_otel_tty}"
@@ -250,7 +244,8 @@ while true; do
         GHOSTTY_OTEL_STATE_DIR="$STATE_DIR" \
         GHOSTTY_OTEL_TTY="$_otel_tty" \
         CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
-        bash "${PLUGIN_ROOT}/scripts/start-listener.sh" > /dev/null 2>&1 &
+        nohup bash "${PLUGIN_ROOT}/scripts/start-listener.sh" > /dev/null 2>&1 &
+        disown
       fi
     fi
   fi

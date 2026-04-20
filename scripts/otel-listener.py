@@ -189,12 +189,42 @@ _hold_timers = {}
 _consecutive_tools_lock = threading.Lock()
 _consecutive_tools = {}
 
+# Log file lock for thread-safe rotation
+_log_lock = threading.Lock()
+
 
 def get_hold_timer(session_id: str) -> HoldTimer:
     with _hold_timers_lock:
         if session_id not in _hold_timers:
             _hold_timers[session_id] = HoldTimer()
         return _hold_timers[session_id]
+
+
+def cleanup_stale_timers():
+    """Remove HoldTimers for sessions whose SID files no longer exist."""
+    active_sids = set()
+    for f in glob.glob(f"{STATE_DIR}/ghostty-sid-*"):
+        try:
+            with open(f, "r") as fh:
+                sid = fh.read().strip()
+            if sid:
+                active_sids.add(sid)
+        except (OSError, IOError):
+            pass
+    with _hold_timers_lock:
+        stale = [sid for sid in _hold_timers if sid not in active_sids]
+        for sid in stale:
+            _hold_timers[sid].clear_timers()
+            del _hold_timers[sid]
+    with _consecutive_tools_lock:
+        # Clean loop counters for sessions without SID files
+        active_keys = set()
+        for f in glob.glob(f"{STATE_DIR}/ghostty-sid-*"):
+            key = os.path.basename(f).replace("ghostty-sid-", "", 1)
+            active_keys.add(key)
+        stale_keys = [k for k in _consecutive_tools if k not in active_keys]
+        for k in stale_keys:
+            del _consecutive_tools[k]
 
 
 def check_loop(tool_name: str, session_key: str) -> bool:
@@ -206,6 +236,12 @@ def check_loop(tool_name: str, session_key: str) -> bool:
         else:
             _consecutive_tools[session_key] = {"tool": tool_name, "count": 1}
         return _consecutive_tools[session_key]["count"] >= LOOP_THRESHOLD
+
+
+def reset_loop_counter(session_key: str):
+    """Reset loop counter for a session (called on idle/completion)."""
+    with _consecutive_tools_lock:
+        _consecutive_tools.pop(session_key, None)
 
 
 def refresh_sid_map():
@@ -273,28 +309,28 @@ def write_state(state: str, meta: dict, session_key: str):
         pass
 
     if LOG_FILE:
-        try:
-            # Rotate: keep last MAX_LOG_BYTES, snap to first newline to avoid partial lines
+        with _log_lock:
             try:
-                size = os.path.getsize(LOG_FILE)
-                if size > MAX_LOG_BYTES:
-                    with open(LOG_FILE, "r") as f:
-                        content = f.read()
-                    # Take last MAX_LOG_BYTES, skip first (partial) line
-                    chunk = content[-(MAX_LOG_BYTES):]
-                    nl_pos = chunk.find("\n")
-                    if nl_pos >= 0:
-                        kept = chunk[nl_pos + 1:]  # skip partial first line
-                    else:
-                        kept = chunk
-                    with open(LOG_FILE, "w") as f:
-                        f.write(kept)
+                # Rotate: keep last MAX_LOG_BYTES, snap to first newline
+                try:
+                    size = os.path.getsize(LOG_FILE)
+                    if size > MAX_LOG_BYTES:
+                        with open(LOG_FILE, "r") as f:
+                            content = f.read()
+                        chunk = content[-(MAX_LOG_BYTES):]
+                        nl_pos = chunk.find("\n")
+                        if nl_pos >= 0:
+                            kept = chunk[nl_pos + 1:]
+                        else:
+                            kept = chunk
+                        with open(LOG_FILE, "w") as f:
+                            f.write(kept)
+                except (OSError, IOError):
+                    pass
+                with open(LOG_FILE, "a") as f:
+                    f.write(f"[{session_key}] {rich}\n")
             except (OSError, IOError):
                 pass
-            with open(LOG_FILE, "a") as f:
-                f.write(f"[{session_key}] {rich}\n")
-        except (OSError, IOError):
-            pass
 
 
 def extract_span_info(span: dict) -> tuple:
@@ -375,6 +411,8 @@ class OTLPHandler(http.server.BaseHTTPRequestHandler):
                                             continue
                                     except (OSError, IOError):
                                         pass
+                                    # Reset loop counter on idle
+                                    reset_loop_counter(sk)
                                     # Idle: defer through HoldTimer to prevent
                                     # premature idle between LLM responses
                                     deferred, has_been_busy, last_completed = timer.update(False, sk)
@@ -391,6 +429,7 @@ class OTLPHandler(http.server.BaseHTTPRequestHandler):
                                     # waiting_input — let the Stop hook write "done"
                                     timer.clear_timers()
                                     timer.mark_completed()
+                                    reset_loop_counter(sk)
                                     write_state(state, attrs, sk)
                                 elif state == "calling_llm":
                                     # OTEL llm_request spans arrive AFTER completion.
@@ -417,7 +456,8 @@ class OTLPHandler(http.server.BaseHTTPRequestHandler):
         self._handle()
 
     def do_GET(self):
-        self._handle()
+        # Health check only — don't process body as OTLP
+        self._respond()
 
 
 class ReusableTCPServer(socketserver.ThreadingTCPServer):
@@ -455,6 +495,13 @@ def main():
 
     with ReusableTCPServer(("", PORT), OTLPHandler) as httpd:
         print(f"ghostty-otel listening on :{PORT} (multi-session)", flush=True)
+        # Periodic cleanup of stale HoldTimers and loop counters
+        def _periodic_cleanup():
+            cleanup_stale_timers()
+            timer = threading.Timer(60, _periodic_cleanup)
+            timer.daemon = True
+            timer.start()
+        _periodic_cleanup()
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
