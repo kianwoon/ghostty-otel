@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# TeammateIdle hook: state-file busy check
+# TeammateIdle hook: auto-proceed if teammate is busy
 # Delegates to shared proceed-by-state.sh
-set -u
-_raw_root="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-source "${_raw_root}/scripts/resolve-cache.sh"
-PLUGIN_ROOT=$(resolve_plugin_root)
-bash "${PLUGIN_ROOT}/scripts/proceed-by-state.sh"
+exec "${0%/*}/proceed-by-state.sh"
