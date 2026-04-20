@@ -135,15 +135,17 @@ class HoldTimer:
                 with open(state_file, "r") as f:
                     current = f.read().strip().split(":")[0]
                 if current in ("idle", "waiting_input", "done", "completed", "subagent_idle"):
-                    # External authority (stop hook) cleared the state —
-                    # stop re-arming and cancel the pending flag.
                     with self._lock:
                         self._llm_pending = False
                         self._llm_rearms = 0
                     return
             except (OSError, IOError):
                 pass
+            # Re-arm timer — create under lock to prevent race with update()
             with self._lock:
+                if self._defer_timer or self._safety_timer:
+                    # Another thread already set a timer — don't stack
+                    return
                 self._llm_rearms = rearms + 1
                 self._safety_timer = threading.Timer(
                     BUSY_HOLD_SECONDS, self._flush_idle
@@ -288,6 +290,14 @@ def write_state(state: str, meta: dict, session_key: str):
             "calling_llm", "tool_running", "tool_exec", "working", "looping"
         ):
             return
+        # Reject busy spans that arrive within 2s of "done" — likely stale
+        # delayed spans from before the stop hook wrote done.
+        if current in ("done", "completed") and state in (
+            "tool_running", "tool_exec"
+        ):
+            file_mtime = os.path.getmtime(txt_path)
+            if time.time() - file_mtime < 2.0:
+                return
     except (OSError, IOError):
         pass
     # Build rich state text

@@ -184,9 +184,6 @@ while true; do
   fi
 
   # --- Stale busy state detection ---
-  # If state hasn't changed for STALE_BUSY_SECONDS while in a busy state,
-  # the OTEL listener likely isn't receiving spans. Reset to idle.
-  # Uses _last_change_epoch (cross-platform) instead of stat -f (macOS-only).
   _now=$(date +%s)
   _stale_dt=$((_now - _last_change_epoch))
   case "$STATE_TEXT" in
@@ -207,11 +204,7 @@ while true; do
     emit "\033]9;4;${OSC}\033\\"
     # OSC 2: window title with TTY and state
     _tty_short="$(basename "$_otel_tty")"
-    if [ "$OSC" = "0" ]; then
-      emit "\033]2;${_tty_short} claude: ${STATE_TEXT}\033\\"
-    else
-      emit "\033]2;${_tty_short} claude: ${STATE_TEXT}\033\\"
-    fi
+    emit "\033]2;${_tty_short} claude: ${STATE_TEXT}\033\\"
     # Debug log (only on state change to avoid spam)
     if [ "$_state_changed" -eq 1 ]; then
       log_write "[$(date +%H:%M:%S)] state=${STATE_TEXT} osc=${OSC} tty=${_otel_tty}"
