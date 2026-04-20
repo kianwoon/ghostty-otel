@@ -310,7 +310,7 @@ def write_state(state: str, meta: dict, session_key: str):
         if parts:
             rich = f"{state}:{':'.join(parts)}"
 
-    tmp_path = txt_path + ".tmp"
+    tmp_path = txt_path + f".tmp.{os.getpid()}.{threading.get_ident()}"
     try:
         with open(tmp_path, "w") as f:
             f.write(rich + "\n")

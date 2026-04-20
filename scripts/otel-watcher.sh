@@ -84,9 +84,7 @@ state_to_osc() {
 }
 
 # --- Prevent duplicate watchers (PID file as lock) ---
-# Use PID file as both lock and alive check — no separate lock dir needed.
 # ln is atomic: if it succeeds, we own the slot. If it fails, someone else does.
-_lock_file="${STATE_DIR}/ghostty-watcher-${SESSION_KEY}.lock"
 echo $$ > "${PID_FILE}.tmp.$$"
 
 if ! ln "${PID_FILE}.tmp.$$" "$PID_FILE" 2>/dev/null; then
@@ -104,6 +102,8 @@ if ! ln "${PID_FILE}.tmp.$$" "$PID_FILE" 2>/dev/null; then
   fi
 fi
 rm -f "${PID_FILE}.tmp.$$"
+# Clean any leaked tmp files from previous crashes
+rm -f "${PID_FILE}.tmp."* 2>/dev/null || true
 # Clean orphan state file without .txt extension
 rm -f "${STATE_FILE%.txt}" 2>/dev/null || true
 log_write "[$(date +%H:%M:%S)] watcher started pid=$$ key=$SESSION_KEY tty=${_otel_tty}"

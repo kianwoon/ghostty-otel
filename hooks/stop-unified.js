@@ -130,22 +130,19 @@ var AGENT_TOOL_NAMES = ['Agent', 'Task', 'SendMessage'];
 // ── Ghostty state ─────────────────────────────────────────────────
 
 function setGhosttyState(state) {
-  // Write state to per-session ghostty-otel state file.
-  // Derive session key from env, TTY, or session-key.sh fallback.
   try {
     var sid = process.env.GHOSTTY_OTEL_SESSION_KEY || '';
     if (!sid) {
       var tty = process.env.GHOSTTY_OTEL_TTY || '';
+      if (!tty) {
+        // Fast path: read TTY from /dev/tty symlink (same as prompt-submit.sh)
+        try {
+          tty = fs.readlinkSync('/dev/tty') || '';
+        } catch (_) {}
+      }
       if (tty) {
         sid = path.basename(tty).replace(/[^a-zA-Z0-9_-]/g, '');
       }
-    }
-    if (!sid) {
-      // Fallback: try session-key.sh
-      var result = childProcess.spawnSync('bash', [
-        '-c', 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/session-key.sh" 2>/dev/null | sed -n "2p"'
-      ], { timeout: 3000 });
-      sid = (result.stdout || '').toString().trim();
     }
     if (!sid) return;
     var stateDir = process.env.GHOSTTY_OTEL_STATE_DIR || '/tmp';

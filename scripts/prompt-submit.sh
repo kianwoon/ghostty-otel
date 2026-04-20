@@ -78,25 +78,12 @@ else
   nohup bash "${PLUGIN_ROOT}/scripts/start-listener.sh" > /dev/null 2>&1 &
 fi
 
-# 4. Ensure watcher is running (with lock to prevent duplicates)
+# 4. Ensure watcher is running (PID-based check, no lock dir)
 WATCHER_PID_FILE="${STATE_DIR}/ghostty-watcher-${SESSION_KEY}.pid"
-WATCHER_LOCK="${STATE_DIR}/ghostty-watcher-${SESSION_KEY}.lock"
-
-if mkdir "$WATCHER_LOCK" 2>/dev/null; then
-  if [ -f "$WATCHER_PID_FILE" ]; then
-    _wpid=$(cat "$WATCHER_PID_FILE" 2>/dev/null) || true
-    if [ -n "$_wpid" ] && kill -0 "$_wpid" 2>/dev/null; then
-      rmdir "$WATCHER_LOCK" 2>/dev/null || true
-    else
-      GHOSTTY_OTEL_TTY="$TTY_PATH" GHOSTTY_OTEL_SESSION_KEY="$SESSION_KEY" \
-        nohup bash "${PLUGIN_ROOT}/scripts/otel-watcher.sh" > /dev/null 2>&1 &
-      rmdir "$WATCHER_LOCK" 2>/dev/null || true
-    fi
-  else
-    GHOSTTY_OTEL_TTY="$TTY_PATH" GHOSTTY_OTEL_SESSION_KEY="$SESSION_KEY" \
-      nohup bash "${PLUGIN_ROOT}/scripts/otel-watcher.sh" > /dev/null 2>&1 &
-    rmdir "$WATCHER_LOCK" 2>/dev/null || true
-  fi
+_wpid=$(cat "$WATCHER_PID_FILE" 2>/dev/null) || true
+if [ -z "$_wpid" ] || ! kill -0 "$_wpid" 2>/dev/null; then
+  GHOSTTY_OTEL_TTY="$TTY_PATH" GHOSTTY_OTEL_SESSION_KEY="$SESSION_KEY" \
+    nohup bash "${PLUGIN_ROOT}/scripts/otel-watcher.sh" > /dev/null 2>&1 &
 fi
 
 exit 0

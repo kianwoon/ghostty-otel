@@ -148,10 +148,11 @@ SESSION_KEY="${GHOSTTY_OTEL_SESSION_KEY:-}"
 
 # Derive session key if not provided (Stop hooks don't have it in env)
 if [[ -z "$SESSION_KEY" ]]; then
-    _raw_root="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-    source "${_raw_root}/scripts/resolve-cache.sh"
-    PLUGIN_ROOT=$(resolve_plugin_root)
-    SESSION_KEY="$(bash "${PLUGIN_ROOT}/scripts/session-key.sh" | sed -n '2p')"
+    # Fast path: read TTY from /dev/tty symlink (same as prompt-submit.sh)
+    TTY_PATH=$(readlink /dev/tty 2>/dev/null) || TTY_PATH=$(stat -f "%Y" /dev/tty 2>/dev/null) || TTY_PATH=""
+    if [[ -n "$TTY_PATH" ]]; then
+        SESSION_KEY=$(basename "$TTY_PATH" | tr '/' '_' | tr -cd 'a-zA-Z0-9_-')
+    fi
 fi
 
 DEBUG_LOG="/tmp/ghostty-stop-debug.log"
