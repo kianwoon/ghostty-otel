@@ -241,12 +241,16 @@ def write_state(state: str, meta: dict, session_key: str):
     """Write state to per-session file."""
     if not session_key:
         return
-    # Guard: don't overwrite "done" state set by Stop hook
+    # Guard: don't overwrite "done" with idle-like states.
+    # But allow busy states (calling_llm, tool_running, etc.) to
+    # overwrite "done" — a new turn has started.
     txt_path = f"{STATE_DIR}/ghostty-indicator-state-{session_key}.txt"
     try:
         with open(txt_path, "r") as f:
             current = f.read().strip().split(":")[0]
-        if current in ("done", "completed"):
+        if current in ("done", "completed") and state not in (
+            "calling_llm", "tool_running", "tool_exec", "working", "looping"
+        ):
             return
     except (OSError, IOError):
         pass
