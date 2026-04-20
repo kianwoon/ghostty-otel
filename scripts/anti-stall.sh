@@ -1,11 +1,23 @@
 #!/usr/bin/env bash
-# Anti-stall prompt hook: detects "planning without executing" pattern
-# Fires on SubagentStop — checks if subagent produced tool output
-# If subagent only planned but didn't execute, forces continuation
+# Anti-stall hook: detects "planning without executing" pattern
+# Fires on SubagentStop and TeammateIdle — checks if agent produced tool output
+# If agent only planned but didn't execute, forces continuation
 set -u
 
-SESSION_KEY="${GHOSTTY_OTEL_SESSION_KEY:-}"
+# Read stdin for stop_hook_active guard (infinite-loop prevention)
+INPUT="$(cat)"
+
+if echo "$INPUT" | command jq -e '.stop_hook_active == true' >/dev/null 2>&1; then
+    echo '{"ok":true}'
+    exit 0
+fi
+
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 STATE_DIR="${GHOSTTY_OTEL_STATE_DIR:-/tmp}"
+
+SESSION_INFO="$(bash "${PLUGIN_ROOT}/scripts/session-key.sh")"
+SESSION_KEY="$(echo "$SESSION_INFO" | sed -n '2p')"
+
 STATE_FILE="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt"
 TRANSCRIPT_PATH="${TRANSCRIPT_PATH:-}"
 

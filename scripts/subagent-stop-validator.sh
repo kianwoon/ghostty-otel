@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Subagent stop validator - command hook replacement for prompt-based SubagentStop hook
-# Same logic as stop-validator.sh but with subagent-specific messaging
-
+# Stop validator for SubagentStop and TeammateIdle hooks
+# Checks transcript for real tool usage and unresolved errors
 set -euo pipefail
 
 INPUT="$(cat)"
@@ -45,12 +44,12 @@ else
 fi
 
 if [[ "$HAS_REAL_TOOLS" -eq 0 ]]; then
-    echo '{"ok":false,"systemMessage":"Subagent stopped without executing any real tools — continuing task"}'
+    echo '{"ok":false,"systemMessage":"Agent stopped without executing any real tools — continuing task"}'
     exit 0
 fi
 
 if [[ "$HAS_ERRORS" -gt 0 ]]; then
-    echo '{"ok":false,"systemMessage":"Subagent had tool errors — continuing to resolve"}'
+    echo '{"ok":false,"systemMessage":"Agent had tool errors — continuing to resolve"}'
     exit 0
 fi
 
