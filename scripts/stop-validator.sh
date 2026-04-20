@@ -8,13 +8,32 @@ set -euo pipefail
 # Read hook input (JSON)
 INPUT="$(cat)"
 
-# Derive session key EARLY (needed for all exit paths)
+# --- Derive session key (3 methods, no slow fallbacks) ---
+# Stop hooks are detached subprocesses — /dev/tty is NOT available.
+# Use session_id from JSON input → SID mapping file → session key.
 STATE_DIR="${GHOSTTY_OTEL_STATE_DIR:-/tmp}"
 SESSION_KEY="${GHOSTTY_OTEL_SESSION_KEY:-}"
 if [[ -z "$SESSION_KEY" ]]; then
-    TTY_PATH=$(readlink /dev/tty 2>/dev/null) || TTY_PATH=$(stat -f "%Y" /dev/tty 2>/dev/null) || TTY_PATH=""
-    if [[ -n "$TTY_PATH" ]]; then
-        SESSION_KEY=$(basename "$TTY_PATH" | tr '/' '_' | tr -cd 'a-zA-Z0-9_-')
+    # Method 1: session_id from JSON → look up /tmp/ghostty-sid-{key} files
+    _sid=""
+    if command -v jq >/dev/null 2>&1; then
+        _sid=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null) || true
+    fi
+    if [[ -z "$_sid" ]]; then
+        _match="${INPUT#*\"session_id\":\"}"
+        if [[ "$_match" != "$INPUT" ]]; then
+            _sid="${_match%%\"*}"
+        fi
+    fi
+    if [[ -n "$_sid" ]]; then
+        # Scan SID files for matching session_id
+        for _sf in "${STATE_DIR}"/ghostty-sid-*; do
+            [[ -f "$_sf" ]] || continue
+            if grep -qx "$_sid" "$_sf" 2>/dev/null; then
+                SESSION_KEY="${_sf##*/ghostty-sid-}"
+                break
+            fi
+        done
     fi
 fi
 
@@ -22,7 +41,7 @@ fi
 allow_stop() {
     if [[ -n "$SESSION_KEY" ]]; then
         _state_file="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt"
-        echo "done" > "$_state_file" 2>/dev/null || true
+        printf 'done' > "$_state_file" 2>/dev/null || true
     fi
     echo '{"ok":true}'
     exit 0

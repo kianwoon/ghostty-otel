@@ -129,20 +129,29 @@ var AGENT_TOOL_NAMES = ['Agent', 'Task', 'SendMessage'];
 
 // ── Ghostty state ─────────────────────────────────────────────────
 
-function setGhosttyState(state) {
+function setGhosttyState(state, inputObj) {
   try {
     var sid = process.env.GHOSTTY_OTEL_SESSION_KEY || '';
-    if (!sid) {
-      var tty = process.env.GHOSTTY_OTEL_TTY || '';
-      if (!tty) {
-        // Fast path: read TTY from /dev/tty symlink (same as prompt-submit.sh)
-        try {
-          tty = fs.readlinkSync('/dev/tty') || '';
-        } catch (_) {}
-      }
-      if (tty) {
-        sid = path.basename(tty).replace(/[^a-zA-Z0-9_-]/g, '');
-      }
+    if (!sid && inputObj && inputObj.session_id) {
+      // Stop hooks are detached subprocesses — /dev/tty not available.
+      // Use session_id → scan /tmp/ghostty-sid-* files for match.
+      var targetSid = inputObj.session_id;
+      var stateDir = process.env.GHOSTTY_OTEL_STATE_DIR || '/tmp';
+      try {
+        var sidFiles = fs.readdirSync(stateDir);
+        for (var i = 0; i < sidFiles.length; i++) {
+          var f = sidFiles[i];
+          if (f.indexOf('ghostty-sid-') !== 0) continue;
+          var sidPath = path.join(stateDir, f);
+          try {
+            var content = fs.readFileSync(sidPath, 'utf8');
+            if (content.trim() === targetSid) {
+              sid = f.replace('ghostty-sid-', '');
+              break;
+            }
+          } catch (_) {}
+        }
+      } catch (_) {}
     }
     if (!sid) return;
     var stateDir = process.env.GHOSTTY_OTEL_STATE_DIR || '/tmp';
@@ -366,21 +375,21 @@ async function main() {
   // ── Gate 1: StopFailure → allow (no recovery needed) ────────────
   if (isStopFailure) {
     _timing('allow-stopfailure');
-    setGhosttyState('done');
+    setGhosttyState('done', input);
     process.exit(0);
   }
 
   // ── Gate 2: Empty message → allow (no work done) ───────────────
   if (!lastMsg || lastMsg.trim().length === 0) {
     _timing('allow-empty');
-    setGhosttyState('done');
+    setGhosttyState('done', input);
     process.exit(0);
   }
 
   // ── Gate 3: Completion markers → allow + announce ───────────────
   for (var i = 0; i < COMPLETION_MARKERS.length; i++) {
     if (COMPLETION_MARKERS[i].test(lastMsg)) {
-      setGhosttyState('done');
+      setGhosttyState('done', input);
       announceCompletion(input.last_assistant_message);
       _timing('allow-completion-marker');
       process.exit(0);
@@ -391,7 +400,7 @@ async function main() {
   var state = loadState();
   var sessionState = state[sessionId] || { count: 0, lastBlock: 0 };
   if (sessionState.count >= MAX_BLOCKS) {
-    setGhosttyState('done');
+    setGhosttyState('done', input);
     announceCompletion(input.last_assistant_message);
     process.stderr.write('[stop-unified] Max blocks (' + MAX_BLOCKS + ') reached. Allowing stop.\n');
     _timing('allow-max-blocks');
@@ -406,7 +415,7 @@ async function main() {
       process.stderr.write('[stop-unified] Context limit hit but within compact cooldown (' +
         Math.round(elapsed / 1000) + 's ago). Skipping.\n');
       _timing('skip-cooldown-compact');
-      setGhosttyState('done');
+      setGhosttyState('done', input);
       process.exit(0);
     }
     state.recovery.lastCompact = now;
@@ -535,7 +544,7 @@ async function main() {
       'Resume exactly where you left off — dispatch the announced tool calls immediately.';
 
     process.stderr.write(rushMsg + '\n');
-    setGhosttyState('working');
+    setGhosttyState('working', input);
     _timing('block-incomplete-intent');
     process.exit(2); // BLOCK stop — agent must continue
   })();
@@ -550,7 +559,7 @@ async function main() {
       process.stderr.write('[stop-unified] Within cooldown (' +
         Math.round(elapsed / 1000) + 's ago). Skipping auto-continue.\n');
       _timing('skip-cooldown-continue');
-      setGhosttyState('done');
+      setGhosttyState('done', input);
       process.exit(0);
     }
     state.recovery.lastRecover = now;
@@ -571,7 +580,7 @@ async function main() {
   }
 
   // ── Default: allow + announce ──────────────────────────────────
-  setGhosttyState('done');
+  setGhosttyState('done', input);
   announceCompletion(input.last_assistant_message);
   _timing('allow-default');
   process.exit(0);
