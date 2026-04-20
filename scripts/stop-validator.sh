@@ -14,6 +14,17 @@ if echo "$INPUT" | command jq -e '.stop_hook_active == true' >/dev/null 2>&1; th
     exit 0
 fi
 
+# Check if Ralph Loop is active — skip blocking to avoid conflicts
+# Ralph has its own Stop hook that manages iteration boundaries
+RALPH_STATE_FILE=".claude/ralph-loop.local.md"
+if [[ -f "$RALPH_STATE_FILE" ]]; then
+    _ralph_active=$(grep '^active:' "$RALPH_STATE_FILE" | sed 's/active: *//' | tr -d ' ')
+    if [[ "$_ralph_active" == "true" ]]; then
+        echo '{"ok":true}'
+        exit 0
+    fi
+fi
+
 TRANSCRIPT_PATH="${TRANSCRIPT_PATH:-}"
 
 # Exit with allow if no transcript (safer default)

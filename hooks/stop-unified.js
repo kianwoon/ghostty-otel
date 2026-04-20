@@ -332,6 +332,17 @@ async function main() {
   // ── Gate 0: stop_hook_active → no-op ───────────────────────────
   if (input.stop_hook_active) { process.exit(0); }
 
+  // ── Gate 0b: Ralph Loop active → no-op ─────────────────────────
+  // Ralph has its own Stop hook that manages iteration boundaries.
+  // Skip all blocking/recovery to avoid conflicting systemMessages and state writes.
+  var ralphStateFile = path.join(process.cwd(), '.claude', 'ralph-loop.local.md');
+  try {
+    if (fs.existsSync(ralphStateFile)) {
+      var ralphContent = fs.readFileSync(ralphStateFile, 'utf8');
+      if (/^active:\s*true\b/m.test(ralphContent)) { process.exit(0); }
+    }
+  } catch (_) { /* best-effort */ }
+
   function _timing(event) {
     var elapsed = Date.now() - _t0;
     if (elapsed > 100) {
