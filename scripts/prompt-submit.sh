@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fires on UserPromptSubmit — emit indicator ON + health check listener.
 # This hook runs in the correct TTY context, so OSC reaches the terminal.
-# Performance budget: <50ms (OSC emit + PID check).
+# Performance budget: <10ms (OSC emit + PID check).
 set -u
 
 _raw_root="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -9,24 +9,10 @@ source "${_raw_root}/scripts/resolve-cache.sh"
 PLUGIN_ROOT=$(resolve_plugin_root)
 STATE_DIR="${GHOSTTY_OTEL_STATE_DIR:-/tmp}"
 
-# --- Auto-sync: dev mode only, zero cost when unchanged ---
-if [ "$_raw_root" != "$PLUGIN_ROOT" ]; then
-  _SYNC_MARKER="/tmp/ghostty-otel-last-sync"
-  _src_mtime=$(stat -f %m "$_raw_root" 2>/dev/null || echo 0)
-  _last_sync=$(cat "$_SYNC_MARKER" 2>/dev/null || echo 0)
-  if [ "$_src_mtime" != "$_last_sync" ]; then
-    rsync -a --delete --exclude='.git' "${_raw_root}/" "$PLUGIN_ROOT/" >/dev/null 2>&1 || true
-    # Also sync marketplace if it exists
-    _market="${HOME}/claude-marketplaces/kianwoon/ghostty-otel"
-    [ -d "$_market" ] && rsync -a --delete --exclude='.git' "${_raw_root}/" "$_market/" >/dev/null 2>&1 || true
-    echo "$_src_mtime" > "$_SYNC_MARKER"
-  fi
-fi
-
-# --- Session key + TTY path derivation (single source of truth) ---
-_SESSION_INFO="$(bash "${PLUGIN_ROOT}/scripts/session-key.sh")"
-TTY_PATH="$(echo "$_SESSION_INFO" | sed -n '1p')"
-SESSION_KEY="$(echo "$_SESSION_INFO" | sed -n '2p')"
+# --- Inline session key derivation (no subshell, no sed) ---
+# Hook runs in correct TTY context — readlink /dev/tty is the fast path.
+TTY_PATH=$(readlink /dev/tty 2>/dev/null) || TTY_PATH=$(stat -f "%Y" /dev/tty 2>/dev/null) || TTY_PATH="/dev/tty"
+SESSION_KEY=$(basename "$TTY_PATH" | tr '/' '_' | tr -cd 'a-zA-Z0-9_-')
 
 PID_FILE="${STATE_DIR}/ghostty-otel-${SESSION_KEY}.pid"
 
@@ -34,12 +20,18 @@ PID_FILE="${STATE_DIR}/ghostty-otel-${SESSION_KEY}.pid"
 _stdin_json="$(cat 2>/dev/null)" || true
 _session_id=""
 if [ -n "$_stdin_json" ]; then
-  _session_id="$(echo "$_stdin_json" | grep -o '"session_id":"[^"]*"' | head -1 | cut -d'"' -f4)" || true
-fi
-if [ -z "$_session_id" ]; then
-  _tp="$(echo "$_stdin_json" | grep -o '"transcript_path":"[^"]*"' | head -1 | cut -d'"' -f4)" || true
-  if [ -n "$_tp" ]; then
-    _session_id="$(basename "$_tp" .jsonl 2>/dev/null)" || true
+  # Bash parameter expansion — no grep/cut forks
+  _match="${_stdin_json#*\"session_id\":\"}"
+  if [ "$_match" != "$_stdin_json" ]; then
+    _session_id="${_match%%\"*}"
+  fi
+  if [ -z "$_session_id" ]; then
+    _tp="${_stdin_json#*\"transcript_path\":\"}"
+    if [ "$_tp" != "$_stdin_json" ]; then
+      _tp="${_tp%%\"*}"
+      _session_id="${_tp##*/}"
+      _session_id="${_session_id%.jsonl}"
+    fi
   fi
 fi
 if [ -z "$_session_id" ]; then
@@ -47,7 +39,8 @@ if [ -z "$_session_id" ]; then
   if [ -f "$TRANSCRIPT_PATH_FILE" ]; then
     _transcript_path="$(cat "$TRANSCRIPT_PATH_FILE" 2>/dev/null)" || true
     if [ -n "$_transcript_path" ]; then
-      _session_id="$(basename "$_transcript_path" .jsonl 2>/dev/null)" || true
+      _session_id="${_transcript_path##*/}"
+      _session_id="${_session_id%.jsonl}"
     fi
   fi
 fi
