@@ -67,15 +67,13 @@ emit() {
 
 # --- OSC code from state text ---
 # Ghostty: 0=clear, 2=red pulsing, 3=blue pulsing
-# Only 4 display states: busy(3), waiting_input(2), idle(0), done(0)
+# Display states: busy(3), idle/waiting_input(2), done(0)
 state_to_osc() {
   case "$1" in
     calling_llm*|tool_running*|tool_exec*|working*|subagent_idle*|looping*|failure*)
       echo 3 ;;   # busy → blue pulsing
-    waiting_input)
+    idle|waiting_input)
       echo 2 ;;   # needs attention → red pulsing
-    idle)
-      echo 0 ;;   # idle → clear
     completed|done)
       echo 0 ;;   # done → clear
     *)
