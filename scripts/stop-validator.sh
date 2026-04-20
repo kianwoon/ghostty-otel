@@ -148,7 +148,9 @@ SESSION_KEY="${GHOSTTY_OTEL_SESSION_KEY:-}"
 
 # Derive session key if not provided (Stop hooks don't have it in env)
 if [[ -z "$SESSION_KEY" ]]; then
-    PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+    _raw_root="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+    source "${_raw_root}/scripts/resolve-cache.sh"
+    PLUGIN_ROOT=$(resolve_plugin_root)
     SESSION_KEY="$(bash "${PLUGIN_ROOT}/scripts/session-key.sh" | sed -n '2p')"
 fi
 

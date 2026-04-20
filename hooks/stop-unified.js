@@ -143,7 +143,7 @@ function setGhosttyState(state) {
     if (!sid) {
       // Fallback: try session-key.sh
       var result = childProcess.spawnSync('bash', [
-        '-c', 'bash "${CLAUDE_PLUGIN_ROOT:-$HOME/Downloads/ghostty-otel}/scripts/session-key.sh" 2>/dev/null | sed -n "2p"'
+        '-c', 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/session-key.sh" 2>/dev/null | sed -n "2p"'
       ], { timeout: 3000 });
       sid = (result.stdout || '').toString().trim();
     }

@@ -3,7 +3,9 @@
 # Ensures we don't orphan files or processes when Claude exits.
 set -u
 
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+_raw_root="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+source "${_raw_root}/scripts/resolve-cache.sh"
+PLUGIN_ROOT=$(resolve_plugin_root)
 STATE_DIR="${GHOSTTY_OTEL_STATE_DIR:-/tmp}"
 
 # --- Session key + TTY path derivation (single source of truth) ---

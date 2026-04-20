@@ -4,8 +4,24 @@
 # Performance budget: <50ms (OSC emit + PID check).
 set -u
 
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+_raw_root="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+source "${_raw_root}/scripts/resolve-cache.sh"
+PLUGIN_ROOT=$(resolve_plugin_root)
 STATE_DIR="${GHOSTTY_OTEL_STATE_DIR:-/tmp}"
+
+# --- Auto-sync: dev mode only, zero cost when unchanged ---
+if [ "$_raw_root" != "$PLUGIN_ROOT" ]; then
+  _SYNC_MARKER="/tmp/ghostty-otel-last-sync"
+  _src_mtime=$(stat -f %m "$_raw_root" 2>/dev/null || echo 0)
+  _last_sync=$(cat "$_SYNC_MARKER" 2>/dev/null || echo 0)
+  if [ "$_src_mtime" != "$_last_sync" ]; then
+    rsync -a --delete --exclude='.git' "${_raw_root}/" "$PLUGIN_ROOT/" >/dev/null 2>&1 || true
+    # Also sync marketplace if it exists
+    _market="${HOME}/claude-marketplaces/kianwoon/ghostty-otel"
+    [ -d "$_market" ] && rsync -a --delete --exclude='.git' "${_raw_root}/" "$_market/" >/dev/null 2>&1 || true
+    echo "$_src_mtime" > "$_SYNC_MARKER"
+  fi
+fi
 
 # --- Session key + TTY path derivation (single source of truth) ---
 _SESSION_INFO="$(bash "${PLUGIN_ROOT}/scripts/session-key.sh")"
@@ -15,11 +31,6 @@ SESSION_KEY="$(echo "$_SESSION_INFO" | sed -n '2p')"
 PID_FILE="${STATE_DIR}/ghostty-otel-${SESSION_KEY}.pid"
 
 # --- Create SID mapping file (session.id → session_key) ---
-# The OTEL listener needs this mapping to route spans to the correct session.
-# Claude Code sends JSON on stdin with session_id and transcript_path.
-# Primary: parse session_id from stdin JSON.
-# Fallback 1: derive from transcript_path in stdin JSON.
-# Fallback 2: read from transcript-path file (external ghostty-state.sh).
 _stdin_json="$(cat 2>/dev/null)" || true
 _session_id=""
 if [ -n "$_stdin_json" ]; then
@@ -45,7 +56,6 @@ if [ -n "$_session_id" ]; then
 fi
 
 # --- OSC 9;4 emit (tmux-aware) ---
-# Uses /dev/tty directly since hook has controlling terminal
 emit() {
   local seq="$1"
   if [ -n "${TMUX:-}" ]; then
@@ -56,28 +66,22 @@ emit() {
   fi
 }
 
-# 1. Emit indicator ON immediately (gap coverage before first OTEL span)
-#    Also write calling_llm to state file so the watcher sustains it.
-#    The listener intentionally never writes calling_llm (OTEL spans arrive
-#    after LLM completion), so prompt-submit owns this state. The listener
-#    will overwrite it with tool_running/idle when the next real span arrives.
+# 1. Emit indicator ON immediately
 emit '\033]9;4;3\033\\'
 emit '\033]2;claude: calling_llm\033\\'
 STATE_FILE="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt"
 _tmpf="${STATE_FILE}.tmp.$$"
 printf 'calling_llm' > "$_tmpf" && mv "$_tmpf" "$STATE_FILE" 2>/dev/null || true
 
-# 3. Check listener health — restart if dead (<2ms when alive)
+# 3. Check listener health — restart if dead
 if [ -f "$PID_FILE" ]; then
   _pid=$(cat "$PID_FILE" 2>/dev/null) || true
   if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
     : # listener alive
   else
-    # Listener dead — restart in background (nohup to survive hook exit)
     nohup bash "${PLUGIN_ROOT}/scripts/start-listener.sh" > /dev/null 2>&1 &
   fi
 else
-  # No PID file — start listener
   nohup bash "${PLUGIN_ROOT}/scripts/start-listener.sh" > /dev/null 2>&1 &
 fi
 
@@ -85,27 +89,21 @@ fi
 WATCHER_PID_FILE="${STATE_DIR}/ghostty-watcher-${SESSION_KEY}.pid"
 WATCHER_LOCK="${STATE_DIR}/ghostty-watcher-${SESSION_KEY}.lock"
 
-_start_watcher() {
-  GHOSTTY_OTEL_TTY="$TTY_PATH" \
-  GHOSTTY_OTEL_SESSION_KEY="$SESSION_KEY" \
-  nohup bash "${PLUGIN_ROOT}/scripts/otel-watcher.sh" > /dev/null 2>&1 &
-}
-
 if mkdir "$WATCHER_LOCK" 2>/dev/null; then
   if [ -f "$WATCHER_PID_FILE" ]; then
     _wpid=$(cat "$WATCHER_PID_FILE" 2>/dev/null) || true
     if [ -n "$_wpid" ] && kill -0 "$_wpid" 2>/dev/null; then
       rmdir "$WATCHER_LOCK" 2>/dev/null || true
     else
-      _start_watcher
+      GHOSTTY_OTEL_TTY="$TTY_PATH" GHOSTTY_OTEL_SESSION_KEY="$SESSION_KEY" \
+        nohup bash "${PLUGIN_ROOT}/scripts/otel-watcher.sh" > /dev/null 2>&1 &
       rmdir "$WATCHER_LOCK" 2>/dev/null || true
     fi
   else
-    _start_watcher
+    GHOSTTY_OTEL_TTY="$TTY_PATH" GHOSTTY_OTEL_SESSION_KEY="$SESSION_KEY" \
+      nohup bash "${PLUGIN_ROOT}/scripts/otel-watcher.sh" > /dev/null 2>&1 &
     rmdir "$WATCHER_LOCK" 2>/dev/null || true
   fi
-else
-  : # Another hook is already starting the watcher
 fi
 
 exit 0

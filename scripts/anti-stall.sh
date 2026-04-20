@@ -12,7 +12,9 @@ if echo "$INPUT" | command jq -e '.stop_hook_active == true' >/dev/null 2>&1; th
     exit 0
 fi
 
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+_raw_root="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+source "${_raw_root}/scripts/resolve-cache.sh"
+PLUGIN_ROOT=$(resolve_plugin_root)
 STATE_DIR="${GHOSTTY_OTEL_STATE_DIR:-/tmp}"
 
 SESSION_INFO="$(bash "${PLUGIN_ROOT}/scripts/session-key.sh")"

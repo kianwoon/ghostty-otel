@@ -9,7 +9,9 @@ set -u
 # Prefer GHOSTTY_OTEL_SESSION_KEY if set (passed by hook before nohup detach)
 # Then try GHOSTTY_OTEL_TTY (TTY path captured before nohup detach)
 # Finally fall back to session-key.sh
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+_raw_root="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+source "${_raw_root}/scripts/resolve-cache.sh"
+PLUGIN_ROOT=$(resolve_plugin_root)
 
 if [ -n "${GHOSTTY_OTEL_SESSION_KEY:-}" ]; then
   SESSION_KEY="$GHOSTTY_OTEL_SESSION_KEY"
