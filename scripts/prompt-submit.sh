@@ -44,6 +44,11 @@ if [[ -n "$_session_id" ]]; then
     printf '%s' "$_session_id" > "${STATE_DIR}/ghostty-sid-${SESSION_KEY}" 2>/dev/null || true
 fi
 
+# Write full transcript path for statusline fallback
+if [[ -n "$_tp" ]] && [[ -n "$SESSION_KEY" ]]; then
+    printf '%s' "$_tp" > "${STATE_DIR}/ghostty-transcript-path-${SESSION_KEY}" 2>/dev/null || true
+fi
+
 # --- OSC 9;4 emit (tmux-aware) ---
 emit() {
     local seq="$1"
@@ -63,29 +68,5 @@ emit '\033]2;claude: calling_llm\033\\'
 STATE_FILE="${STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt"
 _tmpf="${STATE_FILE}.tmp.$$"
 printf 'calling_llm' > "$_tmpf" && mv "$_tmpf" "$STATE_FILE" 2>/dev/null || true
-
-# 3. Check listener health — use GLOBAL PID file (ghostty-otel.pid)
-GLOBAL_PID_FILE="${STATE_DIR}/ghostty-otel.pid"
-if [[ -f "$GLOBAL_PID_FILE" ]]; then
-    _lpid=$(cat "$GLOBAL_PID_FILE" 2>/dev/null) || true
-    if [[ -n "$_lpid" ]] && kill -0 "$_lpid" 2>/dev/null; then
-        : # listener alive
-    else
-        PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-        nohup bash "${PLUGIN_ROOT}/scripts/start-listener.sh" > /dev/null 2>&1 &
-    fi
-else
-    PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-    nohup bash "${PLUGIN_ROOT}/scripts/start-listener.sh" > /dev/null 2>&1 &
-fi
-
-# 4. Ensure watcher is running (PID-based check)
-WATCHER_PID_FILE="${STATE_DIR}/ghostty-watcher-${SESSION_KEY}.pid"
-_wpid=$(cat "$WATCHER_PID_FILE" 2>/dev/null) || true
-if [[ -z "$_wpid" ]] || ! kill -0 "$_wpid" 2>/dev/null; then
-    PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-    GHOSTTY_OTEL_TTY="$TTY_PATH" GHOSTTY_OTEL_SESSION_KEY="$SESSION_KEY" \
-        nohup bash "${PLUGIN_ROOT}/scripts/otel-watcher.sh" > /dev/null 2>&1 &
-fi
 
 exit 0
