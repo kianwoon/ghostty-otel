@@ -128,6 +128,18 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/subagent-output-guard.js",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }
