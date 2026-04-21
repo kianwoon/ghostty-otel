@@ -246,6 +246,41 @@ def reset_loop_counter(session_key: str):
         _consecutive_tools.pop(session_key, None)
 
 
+def auto_register_session(sid: str) -> str:
+    """Try to register an unknown session.id to an orphan session key.
+
+    An orphan key has a watcher PID file but no SID mapping file.
+    If exactly one orphan exists, claim it by writing the SID file.
+    Returns the session_key if claimed, else None.
+    """
+    if not sid:
+        return None
+    # Find session keys with watchers but no SID file
+    sid_keys = set()
+    for f in glob.glob(f"{STATE_DIR}/ghostty-sid-*"):
+        key = os.path.basename(f).replace("ghostty-sid-", "", 1)
+        sid_keys.add(key)
+    orphans = []
+    for f in glob.glob(f"{STATE_DIR}/ghostty-watcher-*.pid"):
+        key = os.path.basename(f).replace("ghostty-watcher-", "", 1).replace(".pid", "", 1)
+        if key not in sid_keys:
+            orphans.append(key)
+    if len(orphans) == 1:
+        key = orphans[0]
+        sid_path = f"{STATE_DIR}/ghostty-sid-{key}"
+        try:
+            tmp = sid_path + f".tmp.{os.getpid()}"
+            with open(tmp, "w") as f:
+                f.write(sid)
+            os.rename(tmp, sid_path)
+            with _sid_map_lock:
+                _sid_map[sid] = key
+            return key
+        except (OSError, IOError):
+            pass
+    return None
+
+
 def refresh_sid_map():
     """Scan /tmp/ghostty-sid-* files to build session.id → session_key mapping."""
     global _sid_map, _sid_map_mtime
@@ -399,7 +434,9 @@ class OTLPHandler(http.server.BaseHTTPRequestHandler):
                                 sid = attrs.get("session.id", "")
                                 sk = get_session_key(sid) if sid else None
                                 if not sk:
-                                    continue  # No session registered yet
+                                    sk = auto_register_session(sid)
+                                    if not sk:
+                                        continue  # No session registered yet
 
                                 timer = get_hold_timer(sid)
 
@@ -455,10 +492,16 @@ class OTLPHandler(http.server.BaseHTTPRequestHandler):
                                         write_state("looping", {"tool": tool_name}, sk)
                                     else:
                                         write_state(state, attrs, sk)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                if LOG_FILE:
+                                    with _log_lock:
+                                        try:
+                                            with open(LOG_FILE, "a") as f:
+                                                f.write(f"[ERROR] span: {e}\n")
+                                        except (OSError, IOError):
+                                            pass
         except Exception:
-            pass
+            pass  # Body parse errors are expected (malformed requests)
         finally:
             self._respond()
 

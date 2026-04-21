@@ -7,6 +7,14 @@ set -uo pipefail  # no -e — we handle errors explicitly
 
 INPUT="$(cat)" || INPUT=""
 
+# ── Gate: no stdin and no transcript → allow (can't decide) ──────
+# When running as 2nd hook after proceed-by-state.sh (which execs
+# and consumes stdin), we get empty input. Without data, allow stop.
+if [[ -z "$INPUT" ]] && [[ -z "${TRANSCRIPT_PATH:-}" ]]; then
+    echo '{"ok":true}'
+    exit 0
+fi
+
 # ── Gate: stop_hook_active → allow ──────────────────────────────
 if [[ "$INPUT" == *'"stop_hook_active":true'* ]] || [[ "$INPUT" == *'"stop_hook_active": true'* ]]; then
     echo '{"ok":true}'

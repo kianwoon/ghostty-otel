@@ -20,8 +20,10 @@ fi
 # --- Inject OTEL env vars into session (required for fresh installs) ---
 # Plugin .claude/settings.json env block is NOT applied automatically.
 # $CLAUDE_ENV_FILE is the supported mechanism for env injection.
-if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
+# Guard: only append once per env file (marker comment dedup).
+if [ -n "${CLAUDE_ENV_FILE:-}" ] && ! grep -q '# ghostty-otel-env' "$CLAUDE_ENV_FILE" 2>/dev/null; then
   cat >> "$CLAUDE_ENV_FILE" <<'ENVEOF'
+# ghostty-otel-env
 CLAUDE_CODE_ENABLE_TELEMETRY=1
 CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318

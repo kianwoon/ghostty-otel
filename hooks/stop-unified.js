@@ -89,10 +89,16 @@ function getSessionKey(sessionId) {
         for (var i = 0; i < files.length; i++) {
           var f = files[i];
           if (f.indexOf('ghostty-sid-') !== 0) continue;
+          // Skip non-matching files quickly by checking name first
           try {
             var content = fs.readFileSync(path.join(STATE_DIR, f), 'utf8');
             if (content.trim() === sessionId) {
               sid = f.replace('ghostty-sid-', '');
+              _cachedSessionKey = sid;
+              // Also create reverse-lookup for future fast path
+              try {
+                fs.writeFileSync(reversePath, f.replace('ghostty-sid-', ''));
+              } catch (_) {}
               break;
             }
           } catch (_) {}

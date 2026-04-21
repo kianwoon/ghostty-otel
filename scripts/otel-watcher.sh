@@ -193,10 +193,14 @@ while true; do
   case "$STATE_TEXT" in
     calling_llm*|tool_running*|tool_exec*|working*|subagent_idle*|looping*)
       if [ "$_stale_dt" -ge "$STALE_BUSY_SECONDS" ]; then
-        _tmpf="${STATE_FILE}.tmp.$$"
-        printf 'idle' > "$_tmpf" && mv "$_tmpf" "$STATE_FILE" 2>/dev/null || true
-        _last_change_epoch=$_now
-        log_write "[$(date +%H:%M:%S)] stale busy (${STATE_TEXT%%:*}) after ${_stale_dt}s → idle"
+        # Only force-reset if listener is dead — otherwise HoldTimer is managing state
+        _lpid=$(cat "${STATE_DIR}/ghostty-otel.pid" 2>/dev/null) || true
+        if [ -z "$_lpid" ] || ! kill -0 "$_lpid" 2>/dev/null; then
+          _tmpf="${STATE_FILE}.tmp.$$"
+          printf 'idle' > "$_tmpf" && mv "$_tmpf" "$STATE_FILE" 2>/dev/null || true
+          _last_change_epoch=$_now
+          log_write "[$(date +%H:%M:%S)] stale busy (${STATE_TEXT%%:*}) after ${_stale_dt}s → idle (listener dead)"
+        fi
       fi
       ;;
   esac
