@@ -89,21 +89,5 @@ if [ -f "$CACHE_SCRIPT" ]; then
   echo "[sync-and-restart] Listener started PID $NEW_PID"
 fi
 
-# --- 6. Restart per-session watchers from cache ---
-CACHE_WATCHER="${CACHE_DIR}/scripts/otel-watcher.sh"
-for sid_file in "${STATE_DIR}"/ghostty-sid-*; do
-  [ -f "$sid_file" ] || continue
-  key=$(basename "$sid_file" | sed 's/ghostty-sid-//')
-  tty_path="/dev/${key}"
-
-  # Remove PID file first — watcher manages its own PID file
-  rm -f "${STATE_DIR}/ghostty-watcher-${key}.pid"
-
-  GHOSTTY_OTEL_TTY="$tty_path" \
-  GHOSTTY_OTEL_SESSION_KEY="$key" \
-  nohup bash "$CACHE_WATCHER" > /dev/null 2>&1 &
-  echo "[sync-and-restart] Watcher started for ${key} PID $!"
-done
-
 echo "[sync-and-restart] Done. All processes running from cache."
 ps aux | grep -E "otel-(listener|watcher)" | grep -v grep || true
