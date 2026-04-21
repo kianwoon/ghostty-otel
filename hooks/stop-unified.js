@@ -63,14 +63,10 @@ var INCOMPLETE_INTENT_PATTERNS = [
 ];
 
 var AGENT_ANNOUNCE_PATTERNS = [
-  /let me\s+(?:fix|build|create|add|set up|implement|update|change|modify|rewrite|refactor|test|check|run|launch|spawn)/i,
-  /i('ll| will)\s+(?:fix|build|create|add|set up|implement|update|change|modify|rewrite|refactor|test|run|launch|spawn)/i,
-  /now\s+(?:i('ll| will)|let me)/i,
-  /launching\s+\S.{0,30}\s+(?:agents?|subagent|workers?)/i,
-  /spawning\s+\S.{0,30}\s+(?:agents?|subagent|workers?)/i,
-  /using\s+(?:\d+\s+)?(?:agents?|subagent|workers?)/i,
+  /(?:let me|i'll|i will|now i'll|starting|launching)\s+.{0,30}\s+(?:agents?|subagent|workers?|team)\b/i,
+  /(?:spawning|launching|using|starting)\s+(?:\d+\s+)?(?:agents?|subagent|workers?|tasks?)/i,
   /in parallel/i,
-  /starting\s+(?:with\s+)?(?:\d+\s+)?(?:agents?|workers?|tasks?)/i
+  /using\s+\d+\s+(?:agents?|workers?|subagents?)\s+for/i
 ];
 
 var AGENT_TOOL_NAMES = ['Agent', 'Task', 'SendMessage'];
@@ -385,6 +381,12 @@ async function main() {
     }
 
     if (workDispatched) return;
+
+    // Inline work: no tool calls but substantive text response = work done in message
+    if (toolCount === 0 && lastMsg.trim().length > 200) return;
+
+    // Text-only threshold: no tools at all requires stronger intent signals
+    if (toolCount === 0 && intentHits < 3) return;
 
     var nowIn = Date.now();
     var incompleteKey = 'incomplete_' + sessionId;
