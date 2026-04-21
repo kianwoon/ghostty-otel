@@ -1,6 +1,6 @@
 {
   "name": "ghostty-otel",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "description": "OpenTelemetry-based state detection for Ghostty terminal indicator. Captures Claude Code's OTEL spans (llm_request, tool calls, blocked_on_user) to drive real-time busy/idle notification states.",
   "author": {
     "name": "kianwoonwong"
