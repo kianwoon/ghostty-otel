@@ -7,21 +7,18 @@ set -u
 
 resolve_plugin_root() {
   # 1. Cache (the ONLY valid runtime path for installed plugins)
-  local CACHE="${HOME}/.claude/plugins/cache/kianwoon/ghostty-otel/1.0.0"
-  if [ -d "$CACHE" ]; then
-    echo "$CACHE"
+  # Find the latest version in cache (sorted = highest version last)
+  for dir in "${HOME}/.claude/plugins/cache/kianwoon/ghostty-otel/"*/; do
+    if [ -d "$dir" ]; then
+      _latest="${dir%/}"
+    fi
+  done
+  if [ -n "${_latest:-}" ]; then
+    echo "$_latest"
     return
   fi
 
-  # 2. Any version in cache
-  for dir in "${HOME}/.claude/plugins/cache/kianwoon/ghostty-otel/"*/; do
-    if [ -d "$dir" ]; then
-      echo "${dir%/}"
-      return
-    fi
-  done
-
-  # 3. Script location (works for direct installs)
+  # 2. Script location (works for local dev)
   echo "$(cd "$(dirname "${BASH_SOURCE[1]:-$0}")/.." && pwd)"
 }
 

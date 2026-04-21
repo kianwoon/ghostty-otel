@@ -45,7 +45,7 @@ if [[ -n "$_session_id" ]]; then
 fi
 
 # Write full transcript path for statusline fallback
-if [[ -n "$_tp" ]] && [[ -n "$SESSION_KEY" ]]; then
+if [[ -n "${_tp:-}" ]] && [[ -n "$SESSION_KEY" ]]; then
     printf '%s' "$_tp" > "${STATE_DIR}/ghostty-transcript-path-${SESSION_KEY}" 2>/dev/null || true
 fi
 
