@@ -43,6 +43,37 @@ else
   SESSION_KEY="$(echo "$_SESSION_INFO" | sed -n '2p')"
 fi
 
+# --- SID mapping + transcript path at session start ---
+_stdin_json="$(cat 2>/dev/null)" || true
+_session_id="${CLAUDE_SESSION_ID:-}"
+_transcript_path=""
+
+if [[ -n "$_stdin_json" ]]; then
+  # Extract transcript_path from SessionStart stdin
+  _tp="${_stdin_json#*\"transcript_path\":\"}"
+  if [[ "$_tp" != "$_stdin_json" ]]; then
+    _transcript_path="${_tp%%\"*}"
+    if [[ -z "$_session_id" ]]; then
+      _session_id="${_transcript_path##*/}"
+      _session_id="${_session_id%.jsonl}"
+    fi
+  fi
+  # Extract session_id from stdin if not in env
+  if [[ -z "$_session_id" ]]; then
+    _match="${_stdin_json#*\"session_id\":\"}"
+    if [[ "$_match" != "$_stdin_json" ]]; then
+      _session_id="${_match%%\"*}"
+    fi
+  fi
+fi
+
+if [[ -n "$_session_id" ]] && [[ -n "$SESSION_KEY" ]]; then
+  printf '%s' "$_session_id" > "${STATE_DIR}/ghostty-sid-${SESSION_KEY}" 2>/dev/null || true
+fi
+if [[ -n "$_transcript_path" ]] && [[ -n "$SESSION_KEY" ]]; then
+  printf '%s' "$_transcript_path" > "${STATE_DIR}/ghostty-transcript-path-${SESSION_KEY}" 2>/dev/null || true
+fi
+
 # Listener is a singleton — use global PID file (not per-session)
 GLOBAL_PID_FILE="${STATE_DIR}/ghostty-otel.pid"
 
