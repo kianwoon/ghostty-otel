@@ -74,7 +74,9 @@ state_to_osc() {
   case "$1" in
     calling_llm*|tool_running*|tool_exec*|working*|looping*|failure*)
       echo 3 ;;   # busy → blue pulsing
-    idle|waiting_input|subagent_idle)
+    idle)
+      echo 0 ;;   # idle → clear (normal between responses)
+    waiting_input|subagent_idle)
       echo 2 ;;   # needs attention → red pulsing
     completed|done)
       echo 0 ;;   # done → clear
@@ -122,6 +124,8 @@ _restart_attempts=0
 MAX_RESTART_ATTEMPTS=3
 IDLE_CLEAR_SECONDS=60
 STALE_BUSY_SECONDS=70
+_idle_clear_epoch=0
+ORPHAN_CHECK_ITERS=300  # 300 × 0.1s = 30s
 _last_change_epoch=$(date +%s)
 while true; do
   _iter=$((_iter + 1))
@@ -197,6 +201,12 @@ while true; do
       ;;
   esac
 
+  # Auto-clear idle state after IDLE_CLEAR_SECONDS
+  if [ "$STATE_TEXT" = "idle" ] && [ "$_stale_dt" -ge "$IDLE_CLEAR_SECONDS" ]; then
+    emit "\033]9;4;0\033\\"
+    emit "\033]2;$(basename "$_otel_tty") claude\033\\"
+  fi
+
   # Emit on state change OR keep-alive interval
   if [ "$_state_changed" -eq 1 ] || [ $(( _iter % KEEPALIVE_ITERS )) -eq 0 ]; then
     OSC=$(state_to_osc "$STATE_TEXT")
@@ -226,6 +236,16 @@ while true; do
     case "$STATE_TEXT" in
       calling_llm*|tool_running*|tool_exec*|working*) _completion_notified=0 ;;
     esac
+  fi
+
+  # --- Orphan detection: exit if no Claude process on this TTY ---
+  if [ $(( _iter % ORPHAN_CHECK_ITERS )) -eq 0 ]; then
+    _tty_base="$(basename "$_otel_tty")"
+    if ! ps -t "$_tty_base" -o pid= 2>/dev/null | grep -q .; then
+      # No process on this TTY — we're orphaned
+      log_write "[$(date +%H:%M:%S)] orphan detected (no process on $_tty_base), exiting"
+      break
+    fi
   fi
 
   # --- Listener health check (PID-based, no lsof) ---
