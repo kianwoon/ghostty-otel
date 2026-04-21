@@ -48,16 +48,7 @@ for pid in $stale_listeners; do
   [ -n "$pid" ] && kill "$pid" 2>/dev/null && echo "  killed stale listener PID $pid"
 done
 
-# --- 4. Kill ALL existing watchers (force restart from cache) ---
-echo "[sync-and-restart] Restarting all watchers from cache..."
-for pidfile in "${STATE_DIR}"/ghostty-watcher-*.pid; do
-  [ -f "$pidfile" ] || continue
-  wpid=$(cat "$pidfile" 2>/dev/null) || true
-  [ -n "$wpid" ] && kill -0 "$wpid" 2>/dev/null && kill "$wpid" 2>/dev/null && echo "  killed watcher PID $wpid"
-  rm -f "$pidfile"
-done
-
-# --- 5. Kill existing listener and restart from cache ---
+# --- 4. Kill existing listener and restart from cache ---
 GLOBAL_PID_FILE="${STATE_DIR}/ghostty-otel.pid"
 PORT="${GHOSTTY_OTEL_PORT:-4318}"
 LOG_FILE="${GHOSTTY_OTEL_LOG:-/tmp/ghostty-otel.log}"
