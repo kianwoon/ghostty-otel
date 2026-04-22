@@ -58,7 +58,7 @@ var COMPLETION_MARKERS = [
 var INCOMPLETE_INTENT_PATTERNS = [
   /\b(?:let me|i'll|i will|now i'll|starting|launching|creating|building|fixing|implementing|adding|setting up)\s+\S.{10,}(?:\s+and\s+|\s+then\s+|\s+,\s*|$)/i,
   /(?:and|then|also|next|after that|finally)\s*$/mi,
-  /^\s*\d+[.)]\s+\S.{5,50}(?:\s+[a-z]\s*$|$)/mi,
+  /^\s*\d+[.)]\s+\S.{5,50}(?:\s+(?:and|then|also|next|after that|finally)\s*$)/mi,
   /\b(?:in parallel|using (?:\d+\s+)?agents?|spawning (?:\d+\s+)?agents?)\b/i
 ];
 
