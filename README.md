@@ -1,9 +1,18 @@
 # ghostty-otel
-<img width="1536" height="1024" alt="ChatGPT Image Apr 17, 2026, 03_46_44 AM" src="https://github.com/user-attachments/assets/4d76b8a7-6f07-4b03-b1e2-aec4d0ad6a18" />
+
+<img width="1536" height="1024" alt="ghostty-otel: real-time Claude Code visibility in Ghostty" src="https://github.com/user-attachments/assets/4d76b8a7-6f07-4b03-b1e2-aec4d0ad6a18" />
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-purple)](https://docs.anthropic.com/en/docs/claude-code)
 
 Real-time visibility into Claude Code's internal state for the [Ghostty](https://ghostty.org) terminal.
 
 Receives Claude Code's OpenTelemetry spans and drives **Ghostty's progress indicator** (OSC 9;4) and **window title** (OSC 2) in real time — so you always know what the AI agent is doing, even when you're not looking at the terminal.
+
+## Demo
+
+<!-- Add a GIF or screenshot here showing the indicator in action -->
+> **TODO:** Add a demo GIF showing the indicator cycling through states (calling_llm → tool_exec → idle) in a Ghostty window.
 
 ## Why This Exists
 
@@ -13,8 +22,9 @@ Claude Code can run for minutes on complex tasks — calling LLMs, executing too
 - An idle agent goes unnoticed while you wait for a response that's never coming
 - Tool failures happen silently while the indicator says everything is fine
 - A subagent plans tasks but stops before executing any of them
+- An agent gets stuck in a tool loop, repeating the same action
 
-**ghostty-otel solves this** by showing Claude's exact state in the terminal indicator and window title — updating in real time as the agent works. The anti-stall system ensures agents keep working on their assigned tasks.
+**ghostty-otel solves this** by showing Claude's exact state in the terminal indicator and window title — updating in real time as the agent works. The anti-stall system ensures agents keep working on their assigned tasks. Loop detection catches repeated tool calls before they waste tokens.
 
 ## What You See
 
@@ -22,174 +32,242 @@ Claude Code can run for minutes on complex tasks — calling LLMs, executing too
 |-------------|-----------|--------------|
 | Calling the LLM | Busy (spinning) | `claude: calling_llm:MiniMax-M2.7[1m]` |
 | Running a tool | Busy (spinning) | `claude: tool_exec:Read` |
+| API error occurred | Attention (red pulsing) | `claude: failure:api_error` |
+| Stuck in a tool loop | Attention (red pulsing) | `claude: looping:Bash` |
 | Subagent stalled mid-task | Attention (red) | `claude: subagent_idle` |
 | Waiting for user input | Attention (red) | `claude: waiting_input` |
-| All tasks completed | Idle | `claude: done` |
-| Turn complete | Idle | `claude: idle` |
+| All tasks completed | Idle (off) | `claude: done` |
+| Turn complete | Idle (off) | `claude: idle` |
+
+## Quick Start
+
+### Prerequisites
+
+- [Ghostty](https://ghostty.org) terminal
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
+
+### Install
+
+1. Add the plugin to your Claude Code marketplace sources:
+
+```bash
+# Create marketplace directory
+mkdir -p ~/claude-marketplaces/kianwoon
+
+# Clone the plugin
+git clone https://github.com/kianwoon/ghostty-otel.git ~/claude-marketplaces/kianwoon/ghostty-otel
+```
+
+2. Register the marketplace in your Claude Code settings (`~/.claude/settings.json`):
+
+```json
+{
+  "marketplace": [
+    { "uri": "~/claude-marketplaces/kianwoon" }
+  ]
+}
+```
+
+3. Install the plugin:
+
+```bash
+claude install-plugin ghostty-otel
+```
+
+4. Restart Claude Code. The plugin activates automatically on session start.
+
+### Verify
+
+```bash
+# Check the listener is running
+cat /tmp/ghostty-otel.pid && kill -0 $(cat /tmp/ghostty-otel.pid)
+
+# Check your session's state file
+cat /tmp/ghostty-indicator-state-$(tty | xargs basename).txt
+```
 
 ## How It Works
 
 ```
 Claude Code ──OTEL spans──▶ otel-listener.py ──state files──▶ otel-watcher.sh ──OSC──▶ Ghostty
    │                              │                                │
-   │                              ├── HoldTimer (60s)              ├── OSC 9;4 (progress bar)
-   │                              ├── LLM-pending re-arm          └── OSC 2 (window title)
-   │                              ├── Loop detection              └── Keep-alive (3s)
+   │                              ├── HoldTimer (60s anti-flap)    ├── OSC 9;4 (progress)
+   │                              ├── LLM-pending re-arm           ├── OSC 2 (window title)
+   │                              ├── Loop detection               └── Keep-alive (3s)
    │                              └── Multi-session routing
    │
-   └── Hooks ──▶ Anti-stall system ──▶ agents keep working
+   ├─ Hooks ──────────────────────────────────────────────────────────────────────────
+   │   │
+   │   ├── Stop ──────────────────▶ stop-unified.js
+   │   │                              ├── Transcript completeness check
+   │   │                              ├── Auto-compact on context limit
+   │   │                              └── Auto-continue on recoverable errors
+   │   │
+   │   ├── SubagentStop/TeammateIdle ──▶ proceed-by-state.sh + anti-stall.sh
+   │   │                                  └── Auto-proceed stalled agents
+   │   │
+   │   ├── PreToolUse ────────────▶ subagent-guard.js
+   │   │                              └── Block runaway subagent spawns
+   │   │
+   │   ├── PostToolUse ───────────▶ subagent-output-guard.js
+   │   │                              └── Handle truncated agent output
+   │   │
+   │   └── PostToolUseFailure ────▶ agent-failure-recovery.js
+   │                                  └── Auto-retry failed agent calls
+   │
+   └── SessionStart ────────────▶ start-listener.sh
+                                    └── Singleton listener + per-session watcher
 ```
 
-### Core Features
+## Hook System
 
-**1. Anti-flapping HoldTimer**
-- Idle spans from Claude Code are deferred for 60 seconds before being written to the state file
-- Prevents the indicator from flashing OFF between LLM responses (Claude sends `idle` spans while still processing)
+All hooks in `hooks/hooks.json`, matcher `"*"`:
 
-**2. LLM-pending re-arm**
-- When the last busy span was `calling_llm` (no tool/input span followed), the timer re-arms instead of flushing idle
-- Covers slow upstream API calls — indicator stays ON until the LLM actually responds
-- Safety cap: 10 re-arms (10 minutes max) prevents orphan busy states
+| Event | Type | Script | Purpose |
+|---|---|---|---|
+| Stop | command | `stop-unified.js` | Block premature stop; auto-compact on context limit; auto-continue on errors |
+| StopFailure | command | `main-agent-proceed.sh` | Auto-proceed main agent on stale idle |
+| SubagentStop | command | `subagent-proceed.sh` + `anti-stall.sh` | Auto-proceed stalled subagents |
+| TeammateIdle | command | `teammate-proceed.sh` + `anti-stall.sh` | Auto-proceed stalled teammates |
+| SessionStart | command | `auto-cleanup-stale-plugins.js` + `start-listener.sh` | Clean stale plugins; start singleton listener + watcher |
+| UserPromptSubmit | command | `prompt-submit.sh` | Immediate OSC emit (gap coverage before first OTEL span) |
+| SessionEnd | command | `session-cleanup.sh` | Kill watcher + remove state files |
+| PreToolUse | command | `subagent-guard.js` | Block runaway subagent spawns (safety guard) |
+| PostToolUse | command | `subagent-output-guard.js` | Handle truncated agent output |
+| PostToolUseFailure | command | `agent-failure-recovery.js` | Auto-retry failed Agent/Task calls (up to 3 retries) |
 
-**3. Multi-session support**
-- Routes spans to correct session via `session.id` attribute → `session_key` mapping
-- Each session gets independent state files and watcher process
-- Session key derived from TTY device (ttys000, ttys002, etc.)
-- **SID mapping created at SessionStart** — eliminates the gap before first UserPromptSubmit
-- **Auto-register** — listener self-heals orphan watchers by matching unknown `session.id` to sessions with watchers but no SID file
+## Anti-Stall & Guard System
 
-**4. Window title (OSC 2)**
-- Shows exact state + metadata in terminal window title
-- Examples: `claude: calling_llm:MiniMax-M2.7[1m]:True`, `claude: tool_exec:Read`
+Beyond the indicator, ghostty-otel keeps your agents working:
 
-**5. Gap coverage**
-- `UserPromptSubmit` hook emits OSC immediately on user input — covers the gap before the first OTEL span arrives (~100-200ms)
+- **Stop guard** (`stop-unified.js`) — analyzes the transcript before allowing Claude to stop. Blocks premature stops when the task is incomplete, auto-compacts on context limit, and auto-continues on recoverable errors.
+- **Subagent guard** (`subagent-guard.js`) — prevents runaway nested subagent spawns that waste tokens.
+- **Output guard** (`subagent-output-guard.js`) — detects truncated agent output and stores full output to disk for retrieval.
+- **Failure recovery** (`agent-failure-recovery.js`) — auto-retries failed Agent/Task calls with error-specific guidance (up to 3 retries per task).
+- **Proceed hooks** — auto-proceed stalled main agents, subagents, and teammates by checking state file for busy states.
 
-### Anti-Stall System
+## Environment Variables
 
-Claude Code agents sometimes stop prematurely — planning tasks without executing them, stalling mid-task, or yielding to user input when work remains. The anti-stall system prevents this:
+| Variable | Default | Purpose |
+|---|---|---|
+| `GHOSTTY_OTEL_PORT` | `4318` | OTLP HTTP port |
+| `GHOSTTY_OTEL_STATE_DIR` | `/tmp` | State/PID file directory |
+| `GHOSTTY_OTEL_HOLD_SECONDS` | `60` | Idle defer (anti-flap) |
+| `GHOSTTY_OTEL_LLM_MAX_REARMS` | `10` | Safety cap on LLM re-arms |
+| `GHOSTTY_OTEL_LOOP_THRESHOLD` | `5` | Same-tool reps before `looping` |
+| `GHOSTTY_OTEL_LOG` | (empty) | Listener log path |
 
-**Task completion validator** (`stop-unified.js`)
-- Runs on `Stop` events
-- Parses transcript for task list patterns (`N tasks (X done, Y open)`)
-- Blocks stop when open tasks remain — forces Claude to keep working
-- Also checks for tool errors + incomplete executions
-- Guard: `stop_hook_active=true` allows stop to prevent infinite loops
+## Architecture Deep-Dive
 
-**State-based auto-proceed** (`proceed-by-state.sh`)
-- Shared by main-agent, subagent, and teammate proceed hooks
-- Checks state file for busy states (`calling_llm`, `tool_running`, `tool_exec`, `subagent_idle`, `looping`)
-- Outputs `{"ok":false,"systemMessage":"proceed — continue your previous task"}` to force continuation
+For plugin developers and contributors.
 
-**Anti-stall detector** (`anti-stall.sh`)
-- Runs on `SubagentStop` and `TeammateIdle` events
-- Detects "planning without executing" pattern (tasks created, no implementation tools run)
-- Detects agents that stopped without any real tool calls
-- Guards against empty stdin when running as second hook in chain
+### Data Flow
 
-**Subagent guard** (`subagent-guard.js` + `subagent-output-guard.js`)
-- PreToolUse guard validates Agent/Task tool parameters before dispatch
-- PostToolUse guard validates subagent output quality after completion
-- Agent failure recovery on PostToolUseFailure automatically retries failed agents
+```
+User types → prompt-submit.sh → OSC emit + state file → Ghostty indicator
+    ↓
+Claude Code → OTEL span → otel-listener.py (HTTP :4318) → state file
+    ↓
+otel-watcher.sh (100ms poll) → reads state file → OSC emit → Ghostty
+```
 
-### Additional Features
+### State Machine
 
-**Loop detection**
-- Tracks consecutive identical tool executions per session
-- When same tool repeats `GHOSTTY_OTEL_LOOP_THRESHOLD` times (default 5) → `looping` state
-- `looping` → OSC 2 (red attention), triggers auto-proceed hooks
-- Configurable via `GHOSTTY_OTEL_LOOP_THRESHOLD` env var
+```
+              ┌──────────────┐
+              │   calling_   │◀── prompt-submit.sh (immediate)
+              │     llm      │◀── OTEL claude_code.llm_request
+              └──────┬───────┘
+                     │ LLM responds
+              ┌──────▼───────┐
+         ┌───▶│  tool_exec   │◀── OTEL claude_code.tool.execution
+         │    └──────┬───────┘
+         │           │ tool done / tool blocked
+         │    ┌──────▼───────────┐
+         │    │  waiting_input   │◀── OTEL claude_code.tool.blocked_on_user
+         │    └──────────────────┘
+         │           │ user responds
+         │           ▼
+         │    ┌──────────────┐
+         └────│ tool_running │◀── OTEL claude_code.tool
+              └──────┬───────┘
+                     │ task complete
+              ┌──────▼───────┐
+              │     idle      │◀── OTEL claude_code.interaction
+              └──────┬───────┘
+                     │ stop hook
+              ┌──────▼───────┐
+              │     done      │◀── stop-unified.js
+              └──────────────┘
 
-**Watcher resilience**
-- Max 3 listener restart attempts before graceful exit (prevents zombie watchers)
-- Atomic `mkdir` lock prevents duplicate watchers per TTY
-- Listener health check every 5s with automatic restart
-- Stale-busy detection only force-resets state if listener is confirmed dead (avoids racing with HoldTimer)
+Special states:
+  failure ──◀── OTEL claude_code.api_error (red pulsing)
+  looping ──◀── Same tool ≥5 consecutive times (red pulsing)
+  subagent_idle ──◀── busy→idle without completion (red)
+```
 
-**Session-aware notifications**
-- `notification-done.sh` includes project name and TTY in notification subtitle
-- Multi-session awareness — you know which session finished
+### Session Routing
 
-## Installation
+Multi-session aware — each terminal gets its own indicator state:
+
+1. **Session key** derived from TTY device (e.g., `ttys003`)
+2. **Session ID** (UUID) from OTEL spans mapped to session key via `/tmp/ghostty-sid-*` files
+3. **State files** per session: `/tmp/ghostty-indicator-state-{key}.txt`
+4. **Watcher** per session: one `otel-watcher.sh` process per TTY
+
+### Key Internals
+
+- **Listener** (`otel-listener.py`): Singleton HTTP server on `:4318`. Receives OTLP JSON, maps spans to states, writes per-session files via atomic rename. Per-session locks prevent TOCTOU races.
+- **Watcher** (`otel-watcher.sh`): Per-session poll loop (100ms). Reads state file, maps to OSC codes, emits with tmux DCS wrapping. Keep-alive every 3s. Orphan detection via TTY process check.
+- **HoldTimer**: Defers idle transitions by 60s to prevent indicator flashing between LLM responses. Re-arms on LLM-pending spans (up to 10 re-arms / 10 min).
+- **Loop detection**: Tracks consecutive same-tool repetitions. Threshold (default 5) triggers `looping` state.
+
+## Contributing
+
+### Dev Setup
 
 ```bash
-claude plugin add kianwoonwong/ghostty-otel
+# Clone
+git clone https://github.com/kianwoon/ghostty-otel.git
+cd ghostty-otel
+
+# Link for development (sync-and-restart.sh copies to cache)
+# Just run this to test your changes:
+bash scripts/sync-and-restart.sh
 ```
 
-That's it. The plugin auto-configures OTEL telemetry via `settings.json`. No manual edits needed.
+### Testing
 
-### What gets set up
+No test framework. Validate changes manually:
 
-| Component | Provided by |
-|-----------|------------|
-| OTEL telemetry config | Plugin's `.claude/settings.json` |
-| OTEL listener (Python HTTP server) | `scripts/otel-listener.py` |
-| Per-session watcher (OSC emitter) | `scripts/otel-watcher.sh` |
-| Prompt submit hook (gap coverage) | `scripts/prompt-submit.sh` |
-| Stop validation + done state | `hooks/stop-unified.js` |
-| Auto-proceed hooks | `scripts/main-agent-proceed.sh`, `scripts/subagent-proceed.sh`, `scripts/teammate-proceed.sh` |
-| Anti-stall detector | `scripts/anti-stall.sh` |
-| Subagent guard | `hooks/subagent-guard.js`, `hooks/subagent-output-guard.js` |
-| Agent failure recovery | `hooks/agent-failure-recovery.js` |
-| Session lifecycle hooks | `scripts/start-listener.sh`, `scripts/session-cleanup.sh` |
-| Session key derivation | `scripts/session-key.sh` |
+```bash
+# Validate JSON
+python3 -c "import json; json.load(open('hooks/hooks.json'))"
 
-### Plugin hooks (auto-configured)
+# Validate Python syntax
+python3 -c "import py_compile; py_compile.compile('scripts/otel-listener.py', doraise=True)"
 
-| Hook | Scripts | Purpose |
-|------|---------|---------|
-| `SessionStart` | `auto-cleanup-stale-plugins.js` + `start-listener.sh` | Clean stale plugins + start OTEL listener + watcher + SID mapping |
-| `UserPromptSubmit` | `prompt-submit.sh` | Immediate OSC emit + SID mapping + gap coverage |
-| `Stop` | `stop-unified.js` | Validate task completeness + write "done" state |
-| `StopFailure` | `main-agent-proceed.sh` + `stop-unified.js` | Auto-proceed main agent + validate completeness |
-| `SubagentStop` | `subagent-proceed.sh` + `anti-stall.sh` | State-based proceed + anti-stall detection |
-| `TeammateIdle` | `teammate-proceed.sh` + `anti-stall.sh` | Auto-proceed stalled teammates + anti-stall |
-| `PreToolUse` (Agent/Task) | `subagent-guard.js` | Validate agent dispatch parameters |
-| `PostToolUse` (Agent/Task) | `subagent-output-guard.js` | Validate agent output quality |
-| `PostToolUseFailure` (Agent/Task) | `agent-failure-recovery.js` | Auto-retry failed agents |
-| `SessionEnd` | `session-cleanup.sh` | Kill watcher + remove state files + SID mapping |
+# Validate shell syntax
+bash -n scripts/*.sh
 
-## Configuration
+# Validate JS syntax
+node -c hooks/*.js
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `GHOSTTY_OTEL_PORT` | `4318` | OTLP HTTP server port |
-| `GHOSTTY_OTEL_STATE_DIR` | `/tmp` | Directory for state files |
-| `GHOSTTY_OTEL_HOLD_SECONDS` | `60` | Seconds to hold before writing idle |
-| `GHOSTTY_OTEL_LLM_MAX_REARMS` | `10` | Max timer re-arms while LLM is pending |
-| `GHOSTTY_OTEL_LOG` | (empty) | Log file path (empty = no logging) |
-| `GHOSTTY_OTEL_WATCHER_LOG` | `/tmp/ghostty-watcher-{key}.log` | Per-session watcher log |
-| `GHOSTTY_OTEL_LOOP_THRESHOLD` | `5` | Consecutive same-tool calls before `looping` state |
+# Test state mapping — source and call state_to_osc()
+bash -c 'source scripts/otel-watcher.sh; state_to_osc "calling_llm"'
 
-## State Files
-
-Each session writes to `${GHOSTTY_OTEL_STATE_DIR}/ghostty-indicator-state-${SESSION_KEY}.txt`:
-
-```
-calling_llm:MiniMax-M2.7[1m]:True
-tool_exec:Read
-tool_running:Bash
-waiting_input
-subagent_idle
-looping:Bash
-done
-idle
+# Test proceed hooks — create temp state file and run
+echo "tool_running" > /tmp/ghostty-indicator-state-test.txt
+GHOSTTY_OTEL_STATE_DIR=/tmp bash scripts/proceed-by-state.sh test
 ```
 
-Format: `state[:metadata...]` — one line, plain text.
+### PR Checklist
 
-## OTEL Span Mapping
-
-| Claude Code Span | State | Indicator |
-|-----------------|-------|-----------|
-| `claude_code.llm_request` | `calling_llm` | ON (busy) |
-| `claude_code.tool` | `tool_running` | ON (busy) |
-| `claude_code.tool.execution` | `tool_exec` | ON (busy) |
-| `claude_code.tool.blocked_on_user` | `waiting_input` | OFF (idle) |
-| `claude_code.interaction` | `idle` | OFF (idle, after hold) |
-| Stale idle (no completion) | `subagent_idle` | ON (osc=2, auto-proceed triggers) |
-| Looping (repeated tool) | `looping` | ON (osc=2, auto-proceed triggers) |
-| Stop hook (task complete) | `done` | OFF (idle) |
+- [ ] All syntax checks pass (Python, shell, JS)
+- [ ] `hooks.json` is valid JSON
+- [ ] Tested with `sync-and-restart.sh` — listener and watcher restart cleanly
+- [ ] No hardcoded paths or credentials
+- [ ] Commit messages follow conventional commits
 
 ## Performance
 
