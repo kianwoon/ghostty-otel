@@ -93,7 +93,18 @@ ensure_watcher() {
 
   # Use mkdir as atomic lock to prevent duplicate watchers
   if ! mkdir "$WATCHER_LOCK" 2>/dev/null; then
-    return  # Another process is already starting the watcher
+    # Check for stale lock (older than 30s)
+    local _lock_age
+    if [ "$(uname)" = "Linux" ]; then
+      _lock_age=$(( $(date +%s) - $(stat -c '%Y' "$WATCHER_LOCK" 2>/dev/null || echo 0) ))
+    else
+      _lock_age=$(( $(date +%s) - $(stat -f '%m' "$WATCHER_LOCK" 2>/dev/null || echo 0) ))
+    fi
+    if [ "$_lock_age" -gt 30 ]; then
+      rmdir "$WATCHER_LOCK" 2>/dev/null || true
+    else
+      return  # Another process is already starting the watcher
+    fi
   fi
 
   # Double-check after acquiring lock
@@ -126,7 +137,8 @@ fi
 if lsof -i :"$PORT" 2>/dev/null | grep -q LISTEN; then
   _other=$(lsof -t -i :"$PORT" 2>/dev/null | head -1)
   if [ -n "$_other" ]; then
-    echo "$_other" > "$GLOBAL_PID_FILE"
+    _tmpf="${GLOBAL_PID_FILE}.tmp.$$"
+    echo "$_other" > "$_tmpf" && mv "$_tmpf" "$GLOBAL_PID_FILE"
     ensure_watcher
     exit 0  # reuse existing listener
   fi
@@ -139,7 +151,8 @@ GHOSTTY_OTEL_SESSION_KEY="global" \
 GHOSTTY_OTEL_LOG="$LOG_FILE" \
 nohup python3 "${PLUGIN_ROOT}/scripts/otel-listener.py" > /dev/null 2>&1 &
 LISTENER_PID=$!
-echo "$LISTENER_PID" > "$GLOBAL_PID_FILE"
+_tmpf="${GLOBAL_PID_FILE}.tmp.$$"
+echo "$LISTENER_PID" > "$_tmpf" && mv "$_tmpf" "$GLOBAL_PID_FILE"
 
 # Wait briefly to verify startup
 sleep 0.3

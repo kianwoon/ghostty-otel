@@ -7,7 +7,13 @@ set -u
 STATE_DIR="${GHOSTTY_OTEL_STATE_DIR:-/tmp}"
 
 # --- Session key derivation (inline, no subshells) ---
-TTY_PATH=$(readlink /dev/tty 2>/dev/null) || TTY_PATH=$(stat -f "%Y" /dev/tty 2>/dev/null) || TTY_PATH=""
+TTY_PATH=$(readlink /dev/tty 2>/dev/null) || TTY_PATH=""
+if [[ -z "$TTY_PATH" ]]; then
+    _tty_out=$(tty 2>/dev/null) || true
+    if [[ -n "$_tty_out" ]] && [[ "$_tty_out" != "not a tty" ]]; then
+        TTY_PATH="$_tty_out"
+    fi
+fi
 if [[ -z "$TTY_PATH" ]]; then
     exit 0  # No TTY — can't emit OSC or derive session key
 fi
