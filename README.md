@@ -45,38 +45,44 @@ Claude Code can run for minutes on complex tasks — calling LLMs, executing too
 
 - [Ghostty](https://ghostty.org) terminal
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
+- Node.js 18+ (for the installer)
+- Python 3 (for the OTEL listener)
 
-### Install
-
-1. Add the plugin to your Claude Code marketplace sources:
+### Install (one command)
 
 ```bash
-# Create marketplace directory
-mkdir -p ~/claude-marketplaces/kianwoon
-
-# Clone the plugin
-git clone https://github.com/kianwoon/ghostty-otel.git ~/claude-marketplaces/kianwoon/ghostty-otel
+npx ghostty-otel
 ```
 
-2. Register the marketplace in your Claude Code settings (`~/.claude/settings.json`):
+This automatically:
+1. Checks prerequisites (Claude Code, Node.js, Python 3)
+2. Registers the plugin marketplace in `~/.claude/settings.json`
+3. Enables the plugin
+4. Verifies the installation
+
+### Install (manual)
+
+If you prefer manual setup, add to `~/.claude/settings.json`:
 
 ```json
 {
-  "marketplace": [
-    { "uri": "~/claude-marketplaces/kianwoon" }
-  ]
+  "extraKnownMarketplaces": {
+    "kianwoon": {
+      "source": { "source": "github", "repo": "kianwoon/ghostty-otel" }
+    }
+  }
 }
 ```
 
-3. Install the plugin:
-
-```bash
-claude install-plugin ghostty-otel
-```
-
-4. Restart Claude Code. The plugin activates automatically on session start.
+Then inside Claude Code, run `/plugin` to install `ghostty-otel@kianwoon`.
 
 ### Verify
+
+```bash
+npx ghostty-otel status
+```
+
+Or manually:
 
 ```bash
 # Check the listener is running

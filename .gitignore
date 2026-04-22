@@ -17,6 +17,9 @@ __pycache__/
 .venv/
 venv/
 
+# Node
+node_modules/
+
 # Claude Code temp files
 .orphaned_at
 scheduled_tasks.lock
