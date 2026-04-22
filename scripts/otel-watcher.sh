@@ -72,11 +72,11 @@ emit() {
 # Display states: busy(3), idle/waiting_input(2), done(0)
 state_to_osc() {
   case "$1" in
-    calling_llm*|tool_running*|tool_exec*|working*|looping*|failure*)
+    calling_llm*|tool_running*|tool_exec*|working*|looping*)
       echo 3 ;;   # busy → blue pulsing
     idle)
       echo 0 ;;   # idle → clear (normal between responses)
-    waiting_input|subagent_idle)
+    waiting_input|subagent_idle|failure*)
       echo 2 ;;   # needs attention → red pulsing
     completed|done)
       echo 0 ;;   # done → clear

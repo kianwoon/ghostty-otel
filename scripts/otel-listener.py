@@ -10,6 +10,7 @@ State transitions:
   claude_code.tool.execution        → tool_exec
   claude_code.tool.blocked_on_user  → waiting_input
   claude_code.interaction           → idle
+  claude_code.api_error             → failure
 """
 
 import json
@@ -38,6 +39,7 @@ SPAN_STATE_MAP = {
     "claude_code.tool.blocked_on_user": "waiting_input",
     "claude_code.tool.execution": "tool_exec",
     "claude_code.interaction": "idle",
+    "claude_code.api_error": "failure",
 }
 
 
