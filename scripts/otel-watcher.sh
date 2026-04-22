@@ -258,6 +258,12 @@ while true; do
     if [ -f "${STATE_DIR}/ghostty-otel.pid" ]; then
       _lpid=$(cat "${STATE_DIR}/ghostty-otel.pid" 2>/dev/null) || true
       if [ -z "$_lpid" ] || ! kill -0 "$_lpid" 2>/dev/null; then
+        if [ "$_restart_attempts" -ge "$MAX_RESTART_ATTEMPTS" ]; then
+          log_write "[$(date +%H:%M:%S)] max restart attempts reached, exiting"
+          break
+        fi
+        _restart_attempts=$((_restart_attempts + 1))
+        log_write "[$(date +%H:%M:%S)] listener dead (health check), restart attempt $_restart_attempts/$MAX_RESTART_ATTEMPTS"
         GHOSTTY_OTEL_SESSION_KEY="$SESSION_KEY" \
         GHOSTTY_OTEL_STATE_DIR="$STATE_DIR" \
         GHOSTTY_OTEL_TTY="$_otel_tty" \

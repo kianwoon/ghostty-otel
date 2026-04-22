@@ -49,6 +49,10 @@ _sid_map_lock = threading.Lock()
 _sid_map = {}  # session_id → session_key
 _sid_map_mtime = 0  # last scan time
 
+# Per-session write locks to prevent TOCTOU in write_state
+_write_locks_lock = threading.Lock()
+_write_locks = {}  # session_key → threading.Lock
+
 
 class HoldTimer:
     """Per-session hold timer for idle suppression.
@@ -315,6 +319,13 @@ def get_session_key(session_id: str) -> str:
     return None
 
 
+def _get_write_lock(session_key: str) -> threading.Lock:
+    with _write_locks_lock:
+        if session_key not in _write_locks:
+            _write_locks[session_key] = threading.Lock()
+        return _write_locks[session_key]
+
+
 def write_state(state: str, meta: dict, session_key: str):
     """Write state to per-session file."""
     if not session_key:
@@ -323,40 +334,42 @@ def write_state(state: str, meta: dict, session_key: str):
     # But allow busy states (calling_llm, tool_running, etc.) to
     # overwrite "done" — a new turn has started.
     txt_path = f"{STATE_DIR}/ghostty-indicator-state-{session_key}.txt"
-    try:
-        with open(txt_path, "r") as f:
-            current = f.read().strip().split(":")[0]
-        if current in ("done", "completed") and state not in (
-            "calling_llm", "tool_running", "tool_exec", "working", "looping"
-        ):
-            return
-        # Reject busy spans that arrive within 2s of "done" — likely stale
-        # delayed spans from before the stop hook wrote done.
-        if current in ("done", "completed") and state in (
-            "tool_running", "tool_exec"
-        ):
-            file_mtime = os.path.getmtime(txt_path)
-            if time.time() - file_mtime < 2.0:
+    lock = _get_write_lock(session_key)
+    with lock:
+        try:
+            with open(txt_path, "r") as f:
+                current = f.read().strip().split(":")[0]
+            if current in ("done", "completed") and state not in (
+                "calling_llm", "tool_running", "tool_exec", "working", "looping"
+            ):
                 return
-    except (OSError, IOError):
-        pass
-    # Build rich state text
-    rich = state
-    if meta:
-        parts = []
-        for k in ("tool", "model", "success"):
-            if k in meta and meta[k]:
-                parts.append(str(meta[k]))
-        if parts:
-            rich = f"{state}:{':'.join(parts)}"
+            # Reject busy spans that arrive within 2s of "done" — likely stale
+            # delayed spans from before the stop hook wrote done.
+            if current in ("done", "completed") and state in (
+                "tool_running", "tool_exec"
+            ):
+                file_mtime = os.path.getmtime(txt_path)
+                if time.time() - file_mtime < 2.0:
+                    return
+        except (OSError, IOError):
+            pass
+        # Build rich state text
+        rich = state
+        if meta:
+            parts = []
+            for k in ("tool", "model", "success"):
+                if k in meta and meta[k]:
+                    parts.append(str(meta[k]))
+            if parts:
+                rich = f"{state}:{':'.join(parts)}"
 
-    tmp_path = txt_path + f".tmp.{os.getpid()}.{threading.get_ident()}"
-    try:
-        with open(tmp_path, "w") as f:
-            f.write(rich + "\n")
-        os.rename(tmp_path, txt_path)
-    except (OSError, IOError):
-        pass
+        tmp_path = txt_path + f".tmp.{os.getpid()}.{threading.get_ident()}"
+        try:
+            with open(tmp_path, "w") as f:
+                f.write(rich + "\n")
+            os.rename(tmp_path, txt_path)
+        except (OSError, IOError):
+            pass
 
     if LOG_FILE:
         with _log_lock:
