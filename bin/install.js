@@ -40,7 +40,7 @@ if (hasPython3) ok('Python 3 found');
 else warn('Python 3 not found — OTEL listener requires Python 3');
 
 if (!hasClaude) {
-  console.log('\nInstall Claude Code first, then re-run: npx ghostty-otel');
+  console.log('\nInstall Claude Code first, then re-run: npx @kianwoon/ghostty-otel');
   process.exit(1);
 }
 
@@ -126,7 +126,7 @@ log('ghostty-otel installed!\n');
 log('Next steps:');
 log('  1. Start a new Claude Code session (or restart)');
 log('  2. The indicator activates automatically');
-log('  3. Run "npx ghostty-otel status" to check health');
+log('  3. Run "npx @kianwoon/ghostty-otel status" to check health');
 log('');
 log('To install inside Claude Code, use: /plugin');
 log('');

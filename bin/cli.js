@@ -8,7 +8,7 @@ if (command === 'status') {
   require('./install.js');
 } else {
   console.log('ghostty-otel — Real-time Claude Code visibility for Ghostty\n');
-  console.log('Usage: npx ghostty-otel [command]\n');
+  console.log('Usage: npx @kianwoon/ghostty-otel [command]\n');
   console.log('Commands:');
   console.log('  install   Install the plugin (default)');
   console.log('  status    Check plugin health and status');

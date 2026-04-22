@@ -4,6 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-Plugin-purple)](https://docs.anthropic.com/en/docs/claude-code)
+[![npm version](https://img.shields.io/npm/v/@kianwoon/ghostty-otel.svg)](https://www.npmjs.com/package/@kianwoon/ghostty-otel)
 
 Real-time visibility into Claude Code's internal state for the [Ghostty](https://ghostty.org) terminal.
 
@@ -50,15 +51,21 @@ Claude Code can run for minutes on complex tasks — calling LLMs, executing too
 
 ### Install (one command)
 
+**via npm:**
 ```bash
-npx ghostty-otel
+npx @kianwoon/ghostty-otel
 ```
 
-This automatically:
-1. Checks prerequisites (Claude Code, Node.js, Python 3)
-2. Registers the plugin marketplace in `~/.claude/settings.json`
-3. Enables the plugin
-4. Verifies the installation
+**via GitHub:**
+```bash
+npx github:kianwoon/ghostty-otel
+```
+
+Both commands automatically:
+1. Check prerequisites (Claude Code, Node.js, Python 3)
+2. Register the plugin marketplace in `~/.claude/settings.json`
+3. Enable the plugin
+4. Verify the installation
 
 ### Install (manual)
 
@@ -79,7 +86,7 @@ Then inside Claude Code, run `/plugin` to install `ghostty-otel@kianwoon`.
 ### Verify
 
 ```bash
-npx ghostty-otel status
+npx @kianwoon/ghostty-otel status
 ```
 
 Or manually:

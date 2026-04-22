@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pyo
+.git/
+docs/
+.DS_Store
+.orphaned_at
+CLAUDE.md
+.claude/

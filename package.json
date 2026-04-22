@@ -1,6 +1,6 @@
 {
-  "name": "ghostty-otel",
-  "version": "1.15.0",
+  "name": "@kianwoon/ghostty-otel",
+  "version": "1.15.2",
   "description": "Real-time Claude Code agent visibility in Ghostty terminal — OTEL-powered progress indicators, anti-stall guards, and multi-session awareness",
   "bin": {
     "ghostty-otel": "./bin/cli.js"
