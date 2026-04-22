@@ -54,7 +54,11 @@ fi
 # Allow the stop to prevent false-positive proceeds.
 if [[ -n "$current" ]] && [[ "$current" != "idle" ]] && [[ "$current" != "done" ]]; then
     _now="$(date +%s)" || _now=0
-    _mtime="$(stat -f '%m' "$STATE_FILE" 2>/dev/null)" || _mtime=0
+    if [ "$(uname)" = "Linux" ]; then
+        _mtime="$(stat -c '%Y' "$STATE_FILE" 2>/dev/null)" || _mtime=0
+    else
+        _mtime="$(stat -f '%m' "$STATE_FILE" 2>/dev/null)" || _mtime=0
+    fi
     _age=$((_now - _mtime))
     if [[ "$_age" -ge "$((HOLD_SECONDS + 5))" ]]; then
         echo '{"ok":true}'

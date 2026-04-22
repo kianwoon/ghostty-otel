@@ -27,10 +27,15 @@ echo "[sync-and-restart] Starting..."
 # --- 1. Sync source → cache + marketplace (dev mode only) ---
 if [ -n "$SOURCE_DIR" ]; then
   echo "[sync-and-restart] Dev mode: syncing ${SOURCE_DIR} → ${CACHE_DIR}"
-  rsync -a --delete --exclude='.git' "${SOURCE_DIR}/" "${CACHE_DIR}/" || true
+  if ! rsync -a --delete --exclude='.git' "${SOURCE_DIR}/" "${CACHE_DIR}/"; then
+    echo "[sync-and-restart] ERROR: rsync to cache failed, aborting"
+    exit 1
+  fi
   MARKET_DIR="${HOME}/claude-marketplaces/kianwoon/ghostty-otel"
   if [ -d "$MARKET_DIR" ]; then
-    rsync -a --delete --exclude='.git' "${SOURCE_DIR}/" "$MARKET_DIR/" || true
+    if ! rsync -a --delete --exclude='.git' "${SOURCE_DIR}/" "$MARKET_DIR/"; then
+      echo "[sync-and-restart] WARNING: rsync to marketplace failed"
+    fi
   fi
 fi
 
@@ -76,7 +81,8 @@ if [ -f "$CACHE_SCRIPT" ]; then
   GHOSTTY_OTEL_LOG="$LOG_FILE" \
   nohup python3 "$CACHE_SCRIPT" > /dev/null 2>&1 &
   NEW_PID=$!
-  echo "$NEW_PID" > "$GLOBAL_PID_FILE"
+  _tmpf="${GLOBAL_PID_FILE}.tmp.$$"
+  echo "$NEW_PID" > "$_tmpf" && mv "$_tmpf" "$GLOBAL_PID_FILE"
   echo "[sync-and-restart] Listener started PID $NEW_PID"
 fi
 

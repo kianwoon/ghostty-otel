@@ -32,6 +32,7 @@ BUSY_HOLD_SECONDS = float(os.environ.get("GHOSTTY_OTEL_HOLD_SECONDS", "60"))
 # Each re-arm adds BUSY_HOLD_SECONDS. 10 × 60s = 10min max wait.
 LLM_PENDING_MAX_REARMS = int(os.environ.get("GHOSTTY_OTEL_LLM_MAX_REARMS", "10"))
 LOOP_THRESHOLD = int(os.environ.get("GHOSTTY_OTEL_LOOP_THRESHOLD", "5"))
+_shutting_down = False
 
 SPAN_STATE_MAP = {
     "claude_code.llm_request": "calling_llm",
@@ -115,6 +116,8 @@ class HoldTimer:
         return False, self._has_been_busy, self._last_completed
 
     def _flush_idle(self):
+        if _shutting_down:
+            return
         with self._lock:
             self._defer_timer = None
             self._safety_timer = None
@@ -523,6 +526,8 @@ class ReusableTCPServer(socketserver.ThreadingTCPServer):
 
 def main():
     def shutdown(signum, frame):
+        global _shutting_down
+        _shutting_down = True
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, shutdown)

@@ -8,13 +8,9 @@ set -u
 _resolve_tty() {
   local _tty_path=""
 
-  # Method 1: Try /dev/tty directly (always works if we have a controlling terminal)
+  # Method 1: Try /dev/tty directly (symlink on Linux, not on macOS)
   if [ -e /dev/tty ]; then
     _tty_path=$(readlink /dev/tty 2>/dev/null || true)
-    if [ -z "$_tty_path" ]; then
-      # stat /dev/tty to get the minor device number
-      _tty_path=$(stat -f "%Y" /dev/tty 2>/dev/null || true)
-    fi
   fi
 
   # Method 2: tty command (may return "not a tty" — must check)

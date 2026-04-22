@@ -49,7 +49,7 @@ var CONTEXT_LIMIT_PATTERNS = [
 var COMPLETION_MARKERS = [
   /\[COMPLETE\]/i, /\[QUALITY\s+\d/i, /\[PROGRESS\s+\d\/\d\]/i,
   /(?:all |every )?(?:test|check|step|task)s?\s+(?:pass|complete|done|finish)/i,
-  /(?:no |zero )?(?:error|warning|failure|issue)s?\s*(?:found|reported|remaining)?$/i,
+  /(?:no |zero )(?:error|warning|failure|issue)s?\s*(?:found|reported|remaining)?$/i,
   /(?:build|compile|lint|deploy|commit|merge)\s+(?:succeed|pass|complete|done)/i,
   /task completed/i, /changes applied/i
 ];
@@ -125,8 +125,7 @@ function setGhosttyState(state, sessionId) {
 // ── Helpers ──────────────────────────────────────────────────────
 function sayAsync(text) {
   try {
-    var escaped = text.replace(/'/g, "'\\''");
-    childProcess.spawn('bash', ['-c', 'nohup say "' + escaped + '" >/dev/null 2>&1 &'], {
+    childProcess.spawn('say', [text], {
       stdio: 'ignore', detached: true
     }).unref();
   } catch (_) {}
@@ -204,10 +203,8 @@ function checkOsascriptPermissions() {
 }
 
 function scheduleRecoveryKeystroke(text, delaySeconds) {
-  // Bash-escape: backslash, double-quote, dollar, backtick
-  var escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`');
   var script = 'sleep ' + delaySeconds +
-    ' && osascript -e \'tell application "System Events" to keystroke "' + escaped + '"\'' +
+    ' && osascript -e \'tell application "System Events" to keystroke "' + text + '"\'' +
     ' -e \'tell application "System Events" to key code 36\'';
   childProcess.spawn('bash', ['-c', script], { stdio: 'ignore', detached: true }).unref();
 }

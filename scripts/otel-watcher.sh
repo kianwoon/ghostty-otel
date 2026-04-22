@@ -127,6 +127,7 @@ STALE_BUSY_SECONDS=70
 _idle_clear_epoch=0
 ORPHAN_CHECK_ITERS=300  # 300 × 0.1s = 30s
 _last_change_epoch=$(date +%s)
+trap 'rm -f "$PID_FILE"; exit 0' TERM INT
 while true; do
   _iter=$((_iter + 1))
 
